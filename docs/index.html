@@ -250,7 +250,7 @@
     <div class="feat reveal"><span class="ico">🦀</span><h3>One pure-Rust binary</h3><p>~29 MB, zero runtime deps, <code>&lt;10 ms</code> warm parse (~700 pages/s). Drop it on a server, a laptop, or a CI box — no environment to set up.</p></div>
     <div class="feat reveal"><span class="ico">📍</span><h3>RAG-native citations</h3><p>Every chunk carries <b>page + bbox + heading breadcrumbs</b>. Reverse <code>locate(x, y)</code> lookup, with 100% coverage — answers that point back to the exact spot on the page.</p></div>
     <div class="feat reveal"><span class="ico">🔌</span><h3>Four faces, one output</h3><p>CLI · library · <b>MCP (stdio)</b> · REST — and the output is <b>byte-identical across all four</b>. Wire it straight into an agent.</p></div>
-    <div class="feat reveal"><span class="ico">🔍</span><h3>In-process OCR</h3><p><code>--ocr</code> runs ONNX on <code>tract</code> (PP-OCRv6 tiny by default). Digital pages never touch a model; CCITT G3/G4 fax + JBIG2 scans covered. ~7 MB fetched on first use.</p></div>
+    <div class="feat reveal"><span class="ico">🔍</span><h3>In-process OCR</h3><p><code>--ocr</code> runs ONNX on <code>tract</code> (PP-OCRv6 tiny by default). Digital-text pages pass through; routed PDF pages use embedded pixels or render their final appearance on demand. ~7 MB fetched on first use.</p></div>
     <div class="feat reveal"><span class="ico">🧠</span><h3>Embedded models, opt-in</h3><p>Merged-cell table structure, formula → LaTeX, full-page transcription (UniRec-0.1B), plus PP-DocLayoutV2 / DocLayout-YOLO layout. None of it baked into the binary.</p></div>
     <div class="feat reveal"><span class="ico">🛡️</span><h3>Safe by default</h3><p>Hidden-text filtering (flagged &amp; auditable, <b>never silently dropped</b>), zip-bomb &amp; page-count guards, per-page complexity profiling. The deterministic core stands alone.</p></div>
   </div>
@@ -273,7 +273,7 @@
 <span class="cm"># RAG chunks — page + bbox + breadcrumbs</span>
 <span class="pr">$</span> docparse input.pdf <span class="fl">-f</span> chunks
 
-<span class="cm"># OCR scans (free for digital pages)</span>
+<span class="cm"># OCR pages without machine-readable text</span>
 <span class="pr">$</span> docparse scan.pdf <span class="fl">--ocr</span></code></pre>
       </div>
       <div>

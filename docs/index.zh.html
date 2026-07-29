@@ -246,7 +246,7 @@
     <div class="feat reveal"><span class="ico">🦀</span><h3>单个纯 Rust 二进制</h3><p>~29 MB，零运行时依赖，暖解析 <code>&lt;10 ms</code>（~700 页/s）。放服务器、笔记本或 CI 都行——没有环境要配。</p></div>
     <div class="feat reveal"><span class="ico">📍</span><h3>RAG 原生引用</h3><p>每个切块带 <b>page + bbox + 标题面包屑</b>。<code>locate(x, y)</code> 坐标反查，定位率 100%——答案能指回页面上的精确位置。</p></div>
     <div class="feat reveal"><span class="ico">🔌</span><h3>四接口一份输出</h3><p>CLI · 库 · <b>MCP（stdio）</b> · REST——四个接口<b>逐字节一致</b>。直接接进 Agent。</p></div>
-    <div class="feat reveal"><span class="ico">🔍</span><h3>进程内 OCR</h3><p><code>--ocr</code> 走 <code>tract</code> ONNX（默认 PP-OCRv6 tiny）。数字页零模型零成本;覆盖 CCITT G3/G4 传真 + JBIG2 扫描。首次使用按需拉取 ~7 MB。</p></div>
+    <div class="feat reveal"><span class="ico">🔍</span><h3>进程内 OCR</h3><p><code>--ocr</code> 走 <code>tract</code> ONNX（默认 PP-OCRv6 tiny）。数字文本页原样通过；OCR 路由页优先使用嵌入像素，否则按需渲染最终页面外观。首次使用按需拉取 ~7 MB。</p></div>
     <div class="feat reveal"><span class="ico">🧠</span><h3>内嵌模型,opt-in</h3><p>合并格表结构、公式 → LaTeX、整页转写（UniRec-0.1B），外加 PP-DocLayoutV2 / DocLayout-YOLO 版面。一概不进二进制。</p></div>
     <div class="feat reveal"><span class="ico">🛡️</span><h3>默认安全</h3><p>隐藏文本过滤（标注可审计,<b>绝不静默删除</b>）、zip-bomb / 页数守卫、页级复杂度画像。确定性核心独立成立。</p></div>
   </div>
@@ -269,7 +269,7 @@
 <span class="cm"># RAG 切块——page + bbox + 面包屑</span>
 <span class="pr">$</span> docparse input.pdf <span class="fl">-f</span> chunks
 
-<span class="cm"># 扫描件 OCR（数字页零成本）</span>
+<span class="cm"># OCR 无机器可读文本的页面</span>
 <span class="pr">$</span> docparse scan.pdf <span class="fl">--ocr</span></code></pre>
       </div>
       <div>

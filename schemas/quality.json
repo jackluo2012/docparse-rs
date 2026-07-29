@@ -5,7 +5,7 @@
       "oneOf": [
         {
           "const": "scanned_no_text",
-          "description": "Pages exist but no text was extracted — almost certainly a scan needing OCR.",
+          "description": "No machine-readable text was extracted. This may be an image scan, a\nvector-outline page, or another painted representation needing OCR.",
           "type": "string"
         },
         {

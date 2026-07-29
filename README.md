@@ -34,7 +34,7 @@ docparse-rs turns **PDF · DOCX · HTML · XLSX · PPTX · Markdown · CSV · SR
 - 🌲 **Document structure tree** — nested sections (title/level/page/bbox) for agentic navigation (`-f outline`, MCP `outline`); chunks carry `section_id` back into the tree
 - 🖼️ **Figures as retrievable chunks** — embedded images (PDF + DOCX + PPTX + HTML) become `image` chunks: caption + surrounding context fill the searchable `text`, while `file`/base64 + page + bbox let RAG render & cite them. Caption binds the adjacent in-document "Figure N" line (or HTML `alt`) for free; `--vlm-describe` upgrades it to a neural description
 - 📦 **OKF knowledge bundles** — first-class [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/tree/main/okf) producer (`-f okf`): structure tree → vendor-neutral, git-native Markdown bundle; citable (page+bbox), deterministic (byte-identical, no wall clock), one binary — no Python/JVM/service. Also MCP `export_okf` / REST `?format=okf`
-- 🔍 **In-process OCR** — `--ocr` runs ONNX on `tract` (PP-OCRv6 tiny by default; offers to fetch ~7 MB on first use); digital pages never touch a model; CCITT G3/G4 fax + JBIG2 scans covered
+- 🔍 **In-process OCR** — `--ocr` runs ONNX on `tract` (PP-OCRv6 tiny by default; offers to fetch ~7 MB on first use); pages with machine-readable text pass through untouched; OCR-routed PDF pages use embedded scan pixels when available, otherwise render the final page appearance on demand (including image-less vector-outline pages)
 - 🧠 **Embedded models, opt-in** — merged-cell table structure, formula→LaTeX, full-page transcription (UniRec-0.1B), plus PP-DocLayoutV2 / DocLayout-YOLO layout
 - 🛡️ **Security pre-checks** — hidden-text filtering (flagged & auditable, never silently dropped), zip-bomb & page-count guards, per-page complexity profiling
 - 🧩 **Pluggable AI boundary** — the deterministic core stands alone; models trigger only on hard pages and carry a `source` tag + capped confidence
@@ -77,7 +77,7 @@ docparse input.pdf -f chunks     # RAG chunks (page + bbox + breadcrumbs + secti
 docparse input.pdf -f outline    # document structure tree (nested sections, citable)
 docparse input.pdf -f okf        # OKF knowledge bundle → report-okf/ (git-native, --okf-tar for stdout)
 docparse ./papers --out-dir out/ --jobs 8   # batch a folder (file-level parallelism for digital docs)
-docparse scan.pdf  --ocr         # OCR scans (free for digital pages; offers to fetch models/ppocr-v6 on first use)
+docparse scan.pdf  --ocr         # OCR pages lacking machine-readable text; digital-text pages pass through
 ```
 
 <details>
