@@ -123,7 +123,7 @@ fn tool_specs() -> Value {
                     "format": { "type": "string", "enum": ["json", "markdown", "text"],
                                 "description": "Output format (default json)" },
                     "ocr": { "type": "boolean",
-                             "description": "OCR scanned pages (default false; digital pages never touch the model)" },
+                             "description": "OCR pages lacking machine-readable text (default false; digital-text pages pass through)" },
                     "layout": { "type": "boolean",
                                 "description": "Re-derive reading order with the layout model (PDF only; needs server --layout-model files)" },
                     "table_model": { "type": "boolean",
@@ -151,7 +151,7 @@ fn tool_specs() -> Value {
                 "properties": {
                     "path": { "type": "string", "description": "Local file path" },
                     "ocr": { "type": "boolean",
-                             "description": "OCR scanned pages (default false)" },
+                             "description": "OCR pages lacking machine-readable text (default false)" },
                     "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" },
                     "table_model": { "type": "boolean", "description": "UniRec table structure (PDF only)" },
                     "formula_model": { "type": "boolean", "description": "Formulas to LaTeX (PDF only)" },
@@ -176,7 +176,7 @@ fn tool_specs() -> Value {
                              "description": "Return only this section's subtree (default: whole document, root id 0)" },
                     "max_depth": { "type": "integer",
                                    "description": "Prune deeper than this many levels (0 = just the node; default: full tree)" },
-                    "ocr": { "type": "boolean", "description": "OCR scanned pages first (default false)" },
+                    "ocr": { "type": "boolean", "description": "OCR pages lacking machine-readable text first (default false)" },
                     "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" }
                 },
                 "required": ["path"]
@@ -195,7 +195,7 @@ fn tool_specs() -> Value {
                     "path": { "type": "string", "description": "Local file path" },
                     "resource_base": { "type": "string",
                                        "description": "Prefix for concept resource URIs (default: bare basename)" },
-                    "ocr": { "type": "boolean", "description": "OCR scanned pages first (default false)" },
+                    "ocr": { "type": "boolean", "description": "OCR pages lacking machine-readable text first (default false)" },
                     "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" }
                 },
                 "required": ["path"]
@@ -213,7 +213,7 @@ fn tool_specs() -> Value {
                     "x": { "type": "number" },
                     "y": { "type": "number" },
                     "ocr": { "type": "boolean",
-                             "description": "OCR scanned pages before locating (default false)" }
+                             "description": "OCR pages lacking machine-readable text before locating (default false)" }
                 },
                 "required": ["path", "page", "x", "y"]
             }

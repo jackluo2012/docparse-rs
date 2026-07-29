@@ -54,7 +54,7 @@
 **输出/输入**：`-f/--format`、`--table-format tab\|markdown`、`-o/--out`、位置参数 `inputs`（文件/文件夹/多输入）。
 **批量**：`--out-dir`、`-r/--recursive`、`--jobs N`、`--report-json`、`--report-csv`。
 **OKF**：`--okf-resource-base <uri>`、`--okf-tar`、`--force`。
-**OCR**：`--ocr`、`--ocr-models <dir>`（默认 `models/ppocr-v6`，缺则 TTY 确认下载 / `DOCPARSE_OCR_DOWNLOAD=1`）。
+**OCR**：`--ocr`、`--ocr-models <dir>`（默认 `models/ppocr-v6`，缺则 TTY 确认下载 / `DOCPARSE_OCR_DOWNLOAD=1`）。路由按页进行：有机器可读文本的页面原样通过；缺少可用文本的 PDF 页优先使用已解码的嵌入扫描图像，否则执行该页的完整 PDF 绘制程序、按需渲染为 RGB 后 OCR。这一回退同时覆盖仅有图像位置、没有图像对象，以及用矢量路径绘制文字外观的页面。
 **版面/结构**：`--layout`、`--layout-model <path>`（YOLO 默认 / PPV2 自动识别）、`--table-model <dir>`、`--formula-model <dir>`、`--transcribe-model <dir>`。
 **VLM**：`--vlm-describe`、`--vlm-tables`、`--vlm-url`、`--vlm-model`、`--vlm-api-key`。
 **图片**：`--image-dir <dir>`、`--image-embed`。
@@ -91,7 +91,7 @@
 
 | 能力 | flag | 模型 | 需下载 | 范围 | source 标记 |
 |---|---|---|---|---|---|
-| OCR | `--ocr` | PP-OCRv6 tiny（v4 回退） | ~7MB 自动 | PDF | `ocr:ppocr` |
+| OCR | `--ocr` | PP-OCRv6 tiny（v4 回退） | ~7MB 自动 | PDF（逐页质量路由；嵌入像素快路径，否则按需渲染页面外观） | `ocr:ppocr` |
 | 版面重排 | `--layout` | DocLayout-YOLO / PP-DocLayoutV2 | 是 | PDF | `layout:<model>`(group/tag) |
 | 表结构 | `--table-model` | UniRec-0.1B | 是 | PDF | `table:unirec-0.1b` |
 | 公式→LaTeX | `--formula-model` | UniRec-0.1B | 是 | PDF | `formula:unirec-0.1b` |

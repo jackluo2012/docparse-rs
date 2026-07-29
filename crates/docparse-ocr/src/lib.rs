@@ -6,7 +6,9 @@
 //! quality-flagged pages route here). Default is PP-OCRv6 tiny.
 //!
 //! Pipeline (mirrors RapidOCR's, independently implemented):
-//!   page image (extracted XObject pixels, never rasterized)
+//!   page image (extracted XObject pixels, with an on-demand whole-page PDF
+//!   render fallback for routed pages without usable pixels, including pages
+//!   whose visible text is painted as vector outlines)
 //!   → det (DBNet, 960×960 padded canvas) → threshold → connected components
 //!   → boxes (rect offset ≈ DB unclip) → per-box crop, resize h=48, width
 //!   buckets → rec (SVTR-LCNet) → CTC greedy decode + mean-prob confidence
@@ -33,6 +35,7 @@
 pub mod fetch;
 pub mod formula;
 pub mod layout;
+pub mod pdf_ocr;
 pub mod table_model;
 pub mod transcribe;
 pub mod unirec;
@@ -435,7 +438,7 @@ impl Enhancer for PpOcrEnhancer {
             .elements
             .iter()
             .filter_map(|e| match e {
-                Element::Image(i) if i.kind != ImageKind::None && !i.data.is_empty() => Some(i),
+                Element::Image(i) if pdf_ocr::is_usable_ocr_image(i) => Some(i),
                 _ => None,
             })
             .max_by(|a, b| {

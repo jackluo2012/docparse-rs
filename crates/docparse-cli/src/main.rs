@@ -483,9 +483,38 @@ fn drop_empty_table_placeholders(doc: &mut docparse_core::ir::Document) {
 
 pub(crate) fn apply_ocr(
     doc: docparse_core::ir::Document,
+    path: &std::path::Path,
     ocr: &docparse_ocr::PpOcrEnhancer,
-) -> docparse_core::ir::Document {
-    docparse_core::enhance::apply(&doc, &[ocr as &dyn docparse_core::enhance::Enhancer]).0
+) -> anyhow::Result<docparse_core::ir::Document> {
+    Ok(apply_ocr_with(doc, path, ocr, None)?.0)
+}
+
+fn apply_ocr_with(
+    doc: docparse_core::ir::Document,
+    path: &std::path::Path,
+    ocr: &docparse_ocr::PpOcrEnhancer,
+    on_page: Option<&(dyn Fn() + Sync)>,
+) -> anyhow::Result<(
+    docparse_core::ir::Document,
+    Vec<docparse_core::enhance::PageRoute>,
+)> {
+    let is_pdf = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("pdf"));
+    if is_pdf {
+        return Ok(docparse_ocr::pdf_ocr::apply_with(
+            &doc,
+            std::fs::read(path)?,
+            ocr,
+            on_page,
+        ));
+    }
+    Ok(docparse_core::enhance::apply_with(
+        &doc,
+        &[ocr as &dyn docparse_core::enhance::Enhancer],
+        on_page,
+    ))
 }
 
 fn vlm_config(
@@ -600,7 +629,7 @@ impl EnhanceState {
                 .ocr
                 .get()
                 .map_err(|e| anyhow::anyhow!("ocr models unavailable: {e}"))?;
-            doc = apply_ocr(doc, enhancer);
+            doc = apply_ocr(doc, path, enhancer)?;
         }
         if o.images_embedded {
             embed_images(&mut doc);
@@ -968,7 +997,6 @@ fn parse_and_enhance(
                 .ocr
                 .get()
                 .map_err(|e| anyhow::anyhow!("ocr models unavailable: {e}"))?;
-            let ocr: &dyn docparse_core::enhance::Enhancer = ocr;
             let (enhanced, report) = match reporter {
                 Some(r) => {
                     let (bar, _g) = r.page_bar("ocr", doc.pages.len() as u64);
@@ -976,12 +1004,12 @@ fn parse_and_enhance(
                         Some(b) => {
                             let b = b.clone();
                             let on_page = move || b.inc(1);
-                            docparse_core::enhance::apply_with(&doc, &[ocr], Some(&on_page))
+                            apply_ocr_with(doc, input, ocr, Some(&on_page))?
                         }
-                        None => docparse_core::enhance::apply(&doc, &[ocr]),
+                        None => apply_ocr_with(doc, input, ocr, None)?,
                     }
                 }
-                None => docparse_core::enhance::apply(&doc, &[ocr]),
+                None => apply_ocr_with(doc, input, ocr, None)?,
             };
             doc = enhanced;
             if log {

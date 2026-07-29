@@ -155,7 +155,10 @@ fn openapi_doc() -> serde_json::Value {
                                 "description": "chunks only: table chunk rendering." }),
                         json!({ "name": "resource_base", "in": "query", "required": false,
                                 "schema": { "type": "string" }, "description": "okf only: concept resource URI prefix." }),
-                        bool_param("ocr", "OCR scanned pages (needs server --ocr-models)."),
+                        bool_param(
+                            "ocr",
+                            "OCR pages lacking machine-readable text (needs server --ocr-models).",
+                        ),
                         bool_param("layout", "Layout-model reading order (PDF only; needs --layout-model)."),
                         bool_param("table_model", "UniRec table structure (needs --unirec-models)."),
                         bool_param("formula_model", "Display formulas to LaTeX (needs --unirec-models)."),

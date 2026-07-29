@@ -31,7 +31,7 @@ docparse-rs 把 **PDF · DOCX · HTML · XLSX · PPTX · Markdown · CSV · SRT/
 - 🦀 **单个纯 Rust 二进制** —— ~29 MB，零运行时依赖，暖解析 <10ms（~700 页/s）
 - 🔌 **四接口一份输出** —— CLI / 库 / MCP（stdio）/ REST，**跨接口逐字节一致**
 - 📍 **RAG 原生引用** —— 每个切块带 page + bbox + 标题面包屑；`locate(x, y)` 坐标反查，定位率 100%
-- 🔍 **进程内 OCR** —— `--ocr` 走 `tract` ONNX（PP-OCRv4）；数字页零模型零成本；覆盖 CCITT G3/G4 传真 + JBIG2 扫描
+- 🔍 **进程内 OCR** —— `--ocr` 走 `tract` ONNX（默认 PP-OCRv6 tiny）；有机器可读文本的页面原样通过；OCR 路由页优先使用嵌入扫描像素，否则按需渲染最终页面外观（也覆盖没有图片对象的文字轮廓页）
 - 🧠 **内嵌模型，opt-in** —— 合并格表结构、公式→LaTeX、整页转写（UniRec-0.1B），外加 PP-DocLayoutV2 / DocLayout-YOLO 版面
 - 🛡️ **安全预检** —— 隐藏文本过滤（标注可审计，绝不静默删除）、zip-bomb / 页数守卫、页级复杂度画像
 - 🧩 **可插拔 AI 边界** —— 确定性核心独立成立；模型只在难页触发，产出带 `source` 标签与降级置信度
@@ -71,7 +71,7 @@ cargo build --release   # → ./target/release/docparse
 docparse input.pdf -f json       # 完整 IR：provenance + 坐标
 docparse input.pdf -f markdown   # Markdown
 docparse input.pdf -f chunks     # RAG 切块（page + bbox + 面包屑）
-docparse scan.pdf  --ocr         # 扫描件 OCR（数字页零成本；首次用会提示拉取 models/ppocr-v6）
+docparse scan.pdf  --ocr         # OCR 无机器可读文本的页面；数字文本页原样通过
 ```
 
 <details>

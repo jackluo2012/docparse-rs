@@ -13,7 +13,8 @@ use serde::{Deserialize, Serialize};
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum QualityFlag {
-    /// Pages exist but no text was extracted — almost certainly a scan needing OCR.
+    /// No machine-readable text was extracted. This may be an image scan, a
+    /// vector-outline page, or another painted representation needing OCR.
     ScannedNoText,
     /// Some pages have no text while others do — a mixed/hybrid document.
     PartialTextCoverage,
@@ -146,7 +147,7 @@ pub struct PageAssessment {
     pub needs_enhancement: bool,
 }
 
-/// Assess one page: no text ⇒ likely scan; high garble ⇒ bad decode.
+/// Assess one page: no text ⇒ OCR candidate; high garble ⇒ bad decode.
 pub fn assess_page(page: &Page) -> PageAssessment {
     let mut chars = 0usize;
     let mut garbled = 0usize;
