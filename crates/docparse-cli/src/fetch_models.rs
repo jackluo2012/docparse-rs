@@ -6,7 +6,6 @@
 //! root dir, banner/progress to stderr, and the PP-DocLayoutV2 static-ize
 //! hint (that prep step still needs `onnxsim` — Python, one-time, documented).
 
-use anyhow::Context as _;
 use clap::ValueEnum;
 use std::path::Path;
 

@@ -1233,8 +1233,9 @@ fn main() -> anyhow::Result<()> {
                 .map(|s| s.starts_with("http://") || s.starts_with("https://"))
                 .unwrap_or(false)
     };
-    let mut temp_input: Option<input_source::TempInput> = None;
-    if cli.inputs.iter().any(is_special) {
+    // Drop guard: the underscore only silences the unused-variable lint on
+    // the batch path — the binding still holds (and drops) the temp file.
+    let _temp_input: Option<input_source::TempInput> = if cli.inputs.iter().any(is_special) {
         if cli.inputs.len() != 1 {
             anyhow::bail!("- (stdin) and URL inputs must be the only input — folder/multi-input batching doesn't apply to them");
         }
@@ -1242,16 +1243,20 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("--out-dir does not apply to - (stdin) or URL inputs");
         }
         let spec = cli.input_format;
-        if cli.inputs[0].to_str() == Some("-") {
+        // The guard keeps the materialized temp file alive until end of run.
+        let t = if cli.inputs[0].to_str() == Some("-") {
             let _g = reporter.spinner("stdin");
-            temp_input = Some(input_source::from_stdin(spec)?);
+            input_source::from_stdin(spec)?
         } else {
             let url = cli.inputs[0].to_str().unwrap_or_default().to_string();
             let _g = reporter.spinner("download");
-            temp_input = Some(input_source::from_url(&url, spec)?);
-        }
-        cli.inputs[0] = temp_input.as_ref().unwrap().0.clone();
-    }
+            input_source::from_url(&url, spec)?
+        };
+        cli.inputs[0] = t.0.clone();
+        Some(t)
+    } else {
+        None
+    };
 
     // Batch when given a folder, several inputs, or an explicit --out-dir;
     // otherwise the classic single-file path (result to stdout or -o).
