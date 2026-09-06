@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--cache-dir <DIR>` — incremental batch cache: a re-run of the same corpus
+  folder skips files whose content (SHA-256) and output options match a
+  previous run, replaying the stored output — the heavy work (OCR / layout /
+  UniRec inference) is skipped entirely. Keyed by path+content-hash+output
+  signature; a content or flag change mints a fresh key and simply re-parses
+  (stale entries are never consulted). Needs --out-dir; not applied to -f
+  okf. Batch report marks cached files (`cached` column / JSON field).
 - `fetch-models <tier>` — install the optional neural model tiers in pure
   Rust over the HuggingFace tree API: `ocr` / `ppocr-v6` (default OCR) /
   `layout` / `unirec` / `ppv2` / `all`, into `--dir` (default `models/`, tier

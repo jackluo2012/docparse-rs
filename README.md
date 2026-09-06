@@ -197,6 +197,7 @@ docparse fetch-models layout     # --layout (default)  (~75 MB)
 docparse fetch-models unirec     # --table/formula/transcribe-model (~700 MB)
 docparse fetch-models ppv2       # --layout-model ppv2 (~210 MB + a local prep step)
 docparse fetch-models all
+docparse corpus/ --out-dir out/ -f chunks --cache-dir .cache   # incremental batch: re-runs skip unchanged files (content-hash keyed)
 ```
 
 Needs the HuggingFace CLI (`pip install -U huggingface_hub`); `ppv2` additionally needs `onnx`+`onnxsim` to static-ize its graph for `tract` (the script prints the one-liner). The `ppocr-v6` default needs no prep — the loader reads PaddleOCR's raw ONNX directly (tract's `ignore_value_info` handles its dynamic graph) and parses the char dict out of the rec yml.

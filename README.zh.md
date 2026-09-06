@@ -159,6 +159,7 @@ docparse fetch-models layout     # --layout（默认）     (~75 MB)
 docparse fetch-models unirec     # --table/formula/transcribe-model (~700 MB)
 docparse fetch-models ppv2       # --layout-model ppv2 (~210 MB + 一步本地预处理)
 docparse fetch-models all
+docparse corpus/ --out-dir out/ -f chunks --cache-dir .cache   # 增量批量：重跑跳过未变更文件（内容哈希键控）
 ```
 
 需 HuggingFace CLI（`pip install -U huggingface_hub`）；`ppv2` 另需 `onnx`+`onnxsim` 把图静态化给 `tract`（脚本会打印该命令）。

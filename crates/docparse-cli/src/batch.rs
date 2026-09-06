@@ -25,7 +25,7 @@ use std::time::Instant;
 use rayon::prelude::*;
 
 use crate::{
-    parse_and_enhance, parsers_with, progress::Reporter, render_doc, Cli, Format, RunModels,
+    cache, parse_and_enhance, parsers_with, progress::Reporter, render_doc, Cli, Format, RunModels,
 };
 
 /// One discovered input: the file to parse plus the path to mirror under
@@ -48,6 +48,9 @@ struct FileStat {
     bytes: u64,
     pages: usize,
     secs: f64,
+    /// True when the result came from the incremental cache (--cache-dir):
+    /// parsing was skipped, the stored output was replayed.
+    cached: bool,
     error: Option<String>,
 }
 
@@ -78,6 +81,24 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> anyhow::Result<()> {
     // no-model run never touches them), not once per file.
     let models = RunModels::from_cli(cli);
 
+    // Incremental cache (--cache-dir): keyed by content hash + output
+    // signature; a hit replays the stored output and skips parsing entirely.
+    // Needs --out-dir (that's where results land); OKF directory bundles are
+    // not cached (no single output byte string).
+    let cache_ctx = match (cli.cache_dir.as_deref(), cli.out_dir.is_some()) {
+        (Some(dir), true) if !matches!(cli.format, Format::Okf) => Some(CacheCtx {
+            dir,
+            sig: cache::output_signature(cli),
+        }),
+        _ => None,
+    };
+    if cli.cache_dir.is_some() && cli.out_dir.is_none() {
+        eprintln!("note: --cache-dir needs --out-dir — running without a cache");
+    }
+    if cli.cache_dir.is_some() && matches!(cli.format, Format::Okf) {
+        eprintln!("note: --cache-dir is not applied to -f okf (directory bundles)");
+    }
+
     // File-level parallelism (--jobs), force-disabled for model batches.
     let cores = std::thread::available_parallelism()
         .map(|c| c.get())
@@ -98,28 +119,7 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> anyhow::Result<()> {
     // the file bar + report are the UI. A parse failure becomes an error row;
     // the batch never aborts. The bar (thread-safe) ticks as each file lands.
     let process = |inp: &BatchInput| -> FileStat {
-        let bytes = std::fs::metadata(&inp.path).map(|m| m.len()).unwrap_or(0);
-        let t = Instant::now();
-        let stat = match parse_and_enhance(&inp.path, cli, &models, None) {
-            Ok(doc) => FileStat {
-                path: inp.path.clone(),
-                rel: inp.rel.clone(),
-                bytes,
-                pages: doc.pages.len(),
-                secs: t.elapsed().as_secs_f64(),
-                error: write_output(cli, &inp.path, &inp.rel, &doc)
-                    .err()
-                    .map(|e| format!("write: {e}")),
-            },
-            Err(e) => FileStat {
-                path: inp.path.clone(),
-                rel: inp.rel.clone(),
-                bytes,
-                pages: 0,
-                secs: t.elapsed().as_secs_f64(),
-                error: Some(short_err(&e)),
-            },
-        };
+        let stat = process_one(inp, cli, &models, cache_ctx.as_ref());
         if let Some(b) = &bar {
             b.inc(1);
         }
@@ -173,19 +173,121 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Cache context for one batch run: the cache dir plus the canonical output
+/// signature (see [`cache::output_signature`]).
+struct CacheCtx<'a> {
+    dir: &'a Path,
+    sig: String,
+}
+
+/// Process one input into a FileStat, honoring the cache when enabled.
+///
+/// Cache path: hash the file content; a lookup hit replays the stored output
+/// (pages from the entry, no parse). A miss parses normally, then stores the
+/// rendered output — best-effort, a failed store just re-parses next run.
+/// Cache file-hash failure is treated like any other per-file error (report
+/// row, batch continues).
+fn process_one(
+    inp: &BatchInput,
+    cli: &Cli,
+    models: &RunModels,
+    cache: Option<&CacheCtx>,
+) -> FileStat {
+    let bytes = std::fs::metadata(&inp.path).map(|m| m.len()).unwrap_or(0);
+    let t = Instant::now();
+    let sha = cache
+        .map(|_| cache::content_sha(&inp.path).map_err(|e| short_err(&e)))
+        .transpose();
+    let sha = match sha {
+        Ok(sha) => sha,
+        Err(e) => {
+            return FileStat {
+                path: inp.path.clone(),
+                rel: inp.rel.clone(),
+                bytes,
+                pages: 0,
+                secs: t.elapsed().as_secs_f64(),
+                cached: false,
+                error: Some(e),
+            };
+        }
+    };
+
+    // Cache hit: replay the stored output, no parse.
+    if let (Some(ctx), Some(sha)) = (cache, &sha) {
+        if let Some(entry) = cache::lookup(ctx.dir, &inp.path, sha, &ctx.sig) {
+            return FileStat {
+                path: inp.path.clone(),
+                rel: inp.rel.clone(),
+                bytes,
+                pages: entry.pages,
+                secs: t.elapsed().as_secs_f64(),
+                cached: true,
+                error: write_rendered_output(cli, &inp.rel, &entry.output)
+                    .err()
+                    .map(|e| format!("write: {e}")),
+            };
+        }
+    }
+
+    match parse_and_enhance(&inp.path, cli, models, None) {
+        Ok(doc) => {
+            let pages = doc.pages.len();
+            let write = write_output(cli, &inp.path, &inp.rel, &doc);
+            match write {
+                Ok(rendered) => {
+                    if let (Some(ctx), Some(sha), Some(rendered)) = (cache, &sha, &rendered) {
+                        let entry = cache::CacheEntry::new(sha.clone(), pages, rendered.clone());
+                        let _ = cache::store(ctx.dir, &inp.path, sha, &ctx.sig, &entry);
+                    }
+                    FileStat {
+                        path: inp.path.clone(),
+                        rel: inp.rel.clone(),
+                        bytes,
+                        pages,
+                        secs: t.elapsed().as_secs_f64(),
+                        cached: false,
+                        error: None,
+                    }
+                }
+                Err(e) => FileStat {
+                    path: inp.path.clone(),
+                    rel: inp.rel.clone(),
+                    bytes,
+                    pages,
+                    secs: t.elapsed().as_secs_f64(),
+                    cached: false,
+                    error: Some(format!("write: {e}")),
+                },
+            }
+        }
+        Err(e) => FileStat {
+            path: inp.path.clone(),
+            rel: inp.rel.clone(),
+            bytes,
+            pages: 0,
+            secs: t.elapsed().as_secs_f64(),
+            cached: false,
+            error: Some(short_err(&e)),
+        },
+    }
+}
+
 /// Write one input's rendered output under `--out-dir` at `<rel>.<format-ext>`
 /// (e.g. `sub/report.pdf` → `out/sub/report.pdf.json`). Keeping the full original
 /// name avoids `a.pdf`/`a.docx` colliding on `a.json`; mirroring `rel`'s sub-dirs
 /// avoids same-named files in different folders colliding in a recursive run.
-/// No-op when there's no `--out-dir` (report-only run).
+/// No-op when there's no `--out-dir` (report-only run). Returns the rendered
+/// output when it was written to a file (None for OKF bundles and report-only
+/// runs) so the caller can cache it.
 fn write_output(
     cli: &Cli,
     src: &Path,
     rel: &Path,
     doc: &docparse_core::ir::Document,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<Option<String>> {
     let Some(dir) = &cli.out_dir else {
-        return Ok(());
+        return Ok(None);
     };
     let rel = safe_rel(rel);
     // OKF is a directory bundle, one per file: <out-dir>/<rel-fullname>-okf/.
@@ -197,9 +299,19 @@ fn write_output(
         }
         let opts = crate::okf_options(cli, src);
         docparse_core::okf::build(doc, &opts).write_to(&bundle_dir)?;
-        return Ok(());
+        return Ok(None);
     }
     let rendered = render_doc(doc, cli)?;
+    write_rendered_output(cli, &rel, &rendered)?;
+    Ok(Some(rendered))
+}
+
+/// Write already-rendered bytes to `<out-dir>/<rel>.<format-ext>`. Shared by
+/// the fresh-parse path and the cache-replay path so both produce identical
+/// files. `rel` must already be safe (see [`safe_rel`]).
+fn write_rendered_output(cli: &Cli, rel: &Path, rendered: &str) -> anyhow::Result<()> {
+    let dir = cli.out_dir.as_ref().expect("--out-dir set by caller");
+    let rel = safe_rel(rel);
     let target = dir.join(format!("{}.{}", rel.display(), output_ext(cli.format)));
     if let Some(parent) = target.parent() {
         std::fs::create_dir_all(parent)?;
@@ -376,6 +488,7 @@ fn render_table(stats: &[FileStat], total_secs: f64) -> String {
             )
         };
         let status = match &f.error {
+            None if f.cached => "cached".to_string(),
             None => "ok".to_string(),
             Some(e) => format!("ERROR: {e}"),
         };
@@ -422,6 +535,7 @@ fn file_value(f: &FileStat) -> serde_json::Value {
         "pages": f.pages,
         "seconds": round3(f.secs),
         "ok": f.error.is_none(),
+        "cached": f.cached,
     });
     if let Some(e) = &f.error {
         o["error"] = serde_json::Value::String(e.clone());
@@ -454,15 +568,16 @@ fn render_json(stats: &[FileStat], total_secs: f64) -> String {
 }
 
 fn render_csv(stats: &[FileStat]) -> String {
-    let mut s = String::from("file,path,bytes,pages,seconds,ok,error\n");
+    let mut s = String::from("file,path,bytes,pages,seconds,cached,ok,error\n");
     for f in stats {
         s.push_str(&format!(
-            "{},{},{},{},{:.3},{},{}\n",
+            "{},{},{},{},{:.3},{},{},{}\n",
             csv_field(&f.label()),
             csv_field(&f.path.display().to_string()),
             f.bytes,
             f.pages,
             f.secs,
+            f.cached,
             f.error.is_none(),
             csv_field(f.error.as_deref().unwrap_or("")),
         ));
@@ -496,6 +611,7 @@ mod tests {
             bytes,
             pages,
             secs: 0.1,
+            cached: false,
             error: error.map(|e| e.to_string()),
         }
     }
@@ -601,7 +717,9 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render_json(&stats, 1.0)).unwrap();
         assert_eq!(v["files"].as_array().unwrap().len(), 2);
         assert_eq!(v["files"][0]["ok"], true);
+        assert_eq!(v["files"][0]["cached"], false);
         assert_eq!(v["files"][1]["ok"], false);
+        assert_eq!(v["files"][1]["cached"], false);
         assert_eq!(v["files"][1]["error"], "nope");
         assert_eq!(v["totals"]["files"], 2);
         assert_eq!(v["totals"]["ok"], 1);

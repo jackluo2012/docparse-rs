@@ -66,16 +66,22 @@ pub fn run(tier: FetchTierArg, root: &Path) -> anyhow::Result<()> {
     }
     if tiers.contains(&docparse_ocr::fetch::Tier::Ppv2) {
         eprintln!();
-        eprintln!("  PP-DocLayoutV2's official export has a dynamic graph tract can't shape-infer.");
+        eprintln!(
+            "  PP-DocLayoutV2's official export has a dynamic graph tract can't shape-infer."
+        );
         eprintln!("  Static-ize it once (needs a venv with onnx + onnxsim):");
         eprintln!();
         eprintln!("      pip install onnx onnxsim");
         eprintln!("      python scripts/spike/ppv2/prepare.py");
         eprintln!();
-        eprintln!("  → produces {}/layout-ppv2/PP-DoclayoutV2_simp.onnx, then run with",
-            root.display());
-        eprintln!("      --layout --layout-model {}/layout-ppv2/PP-DoclayoutV2_simp.onnx",
-            root.display());
+        eprintln!(
+            "  → produces {}/layout-ppv2/PP-DoclayoutV2_simp.onnx, then run with",
+            root.display()
+        );
+        eprintln!(
+            "      --layout --layout-model {}/layout-ppv2/PP-DoclayoutV2_simp.onnx",
+            root.display()
+        );
     }
     eprintln!("done.");
     Ok(())

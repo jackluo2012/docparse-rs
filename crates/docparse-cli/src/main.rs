@@ -1,6 +1,7 @@
 //! `docparse` — parse a document into JSON / Markdown / text.
 
 mod batch;
+mod cache;
 mod fetch_models;
 mod mcp;
 mod progress;
@@ -256,6 +257,14 @@ struct Cli {
     /// content when processing more than one file. Created if missing.
     #[arg(long, value_name = "DIR")]
     out_dir: Option<PathBuf>,
+
+    /// Batch cache directory: on a re-run, skip files whose content and
+    /// output options match a previous run and replay the stored output —
+    /// the heavy work (OCR / layout / UniRec) is skipped entirely. Keyed by
+    /// content SHA-256 + output signature; a content or flag change simply
+    /// misses and re-parses. Requires --out-dir. Not applied to -f okf.
+    #[arg(long, value_name = "DIR")]
+    cache_dir: Option<PathBuf>,
 
     /// In batch mode, descend into sub-folders. Default: only the folder's top
     /// level. No effect on explicit file inputs.
@@ -832,7 +841,7 @@ pub(crate) fn embed_images(doc: &mut docparse_core::ir::Document) -> usize {
     n
 }
 
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum Format {
     Json,
     Markdown,
@@ -849,7 +858,7 @@ enum Format {
 }
 
 /// Table cell rendering inside `chunks` text.
-#[derive(Clone, Copy, ValueEnum)]
+#[derive(Clone, Copy, Debug, ValueEnum)]
 enum TableFormat {
     /// Tab/newline separated (default, compact).
     Tab,
@@ -925,6 +934,12 @@ fn main() -> anyhow::Result<()> {
     }
 
     let input = &cli.inputs[0];
+    if let Some(dir) = &cli.cache_dir {
+        eprintln!(
+            "note: --cache-dir {} applies to batch runs (folder / multiple inputs / --out-dir); ignoring",
+            dir.display()
+        );
+    }
     let input_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
 
     let models = RunModels::from_cli(&cli);

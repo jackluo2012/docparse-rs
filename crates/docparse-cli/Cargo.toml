@@ -30,9 +30,11 @@ docparse-img = { path = "../docparse-img" }
 docparse-adoc = { path = "../docparse-adoc" }
 anyhow.workspace = true
 clap.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 axum.workspace = true
 tokio.workspace = true
 indicatif.workspace = true
 libc.workspace = true
 rayon.workspace = true
+sha2.workspace = true

@@ -48,6 +48,8 @@
 
 **Phase 18（fetch-models 纯 Rust 化,2026-09-06,已实施）**：`docparse fetch-models <tier>` 内建模型下载，替代 `scripts/fetch-models.sh` + HuggingFace CLI 的 shell/Python 依赖。HF tree API 列目录 + glob 匹配（扛仓库重组）+ resolve 直链下载，5 个 tier（ocr / ppocr-v6 / layout / unirec / ppv2）+ all；`ensure_ocr_models`（首次 OCR 提示下载）与脚本（降级为薄封装）均指向内建命令。3 单测（glob 匹配 ×2 + tier 规格自检）+ e2e（真实下载 ppocr-v6 4 文件 ~7MB）+ workspace 全绿 + clippy 零新增。见 [devlogs/2026-09-06-fetch-models-builtin.md](devlogs/2026-09-06-fetch-models-builtin.md)。**未做**：下载并行化（顺序下载，简单可预期）。
 
+**Phase 19（增量解析缓存,2026-09-06,已实施）**：`--cache-dir <DIR>` 让 RAG 语料批量重跑跳过未变更文件——按 (绝对路径, 内容 SHA-256, 输出签名) 键控，命中直接回放已渲染输出，OCR/版面/UniRec 等重活全跳过；改内容或换输出参数即自然失效。原子写入（tmp+rename），写失败降级为下次重解析、不失败批次；报告标记 cached（表格状态列 / JSON `cached` 字段 / CSV 列）。3 单测（内容哈希稳定性 + 签名对输出参数敏感且对 stderr 参数不敏感 + store/lookup 回环）+ e2e（缓存回放与无缓存批量逐字节一致 / 命中-失效矩阵 / 表列 cached）。见 [devlogs/2026-09-06-incremental-cache.md](devlogs/2026-09-06-incremental-cache.md)。**未做**：OKF 目录包缓存；缓存修剪（旧键随内容/参数演变滞留磁盘）。
+
 ## 2. 记分牌（两套互补）
 
 ① **OmniDocBench**（人工真值，模型路径，第一参考）——文本/公式（UniRec）各 ~0.87（论文子集近论文级）、表结构 TEDS_X 0.810（median 0.895，80 表）、套官方公式 Overall ≈75（对标 OpenDoc-0.1B 90.67 / Docling ~80–85 / Marker 78.44）；**短板=学术难表**（端到端 0.52，模型天花板）+ 轻量 `--ocr` mobile（0.42–0.44，用 `--transcribe-model` 提质）。
