@@ -377,6 +377,21 @@ pub fn detect_header_footer(pages: &[Page], lines_per_page: &[Vec<Line>]) -> Hea
     empty
 }
 
+/// A page-number line: a lone 1-3 digit text in the top/bottom 12% margin.
+/// Page numbers differ per page, so running-content repeat detection never
+/// catches them; filtering by margin position + pure digits does, without
+/// touching lone digits in the body area (table fragments etc.).
+fn is_page_number_line(line: &Line, page: &Page) -> bool {
+    let raw = line.text.trim();
+    if raw.is_empty() || raw.len() > 3 || !raw.chars().all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    let h = page.height.max(1.0);
+    let top = h * 0.88;
+    let bot = h * 0.12;
+    line.cy + line.size / 2.0 >= top || line.cy - line.size / 2.0 <= bot
+}
+
 /// Whether a line is numeric-dominant (>40% digits among non-space chars) —
 /// a cheap proxy for table/number rows we must not reflow into prose.
 fn is_numeric_row(text: &str) -> bool {
@@ -793,7 +808,10 @@ pub fn page_blocks(doc: &Document) -> Vec<Vec<Block>> {
         .into_iter()
         .zip(&doc.pages)
         .map(|(lines, page)| {
-            let body_lines: Vec<Line> = lines.into_iter().filter(|l| !hf.is_running(l)).collect();
+            let body_lines: Vec<Line> = lines
+                .into_iter()
+                .filter(|l| !hf.is_running(l) && !is_page_number_line(l, page))
+                .collect();
             let fill_edges = column_fill_edges(&body_lines, page.width);
             dehyphenate_blocks(group_blocks(&body_lines, body, &fill_edges))
         })
@@ -1176,7 +1194,118 @@ mod page_items_tests {
         let items = page_items(&d);
         assert_eq!(kinds(&items[0]), vec!["L1", "L2", "R1", "[table]"]);
     }
+
+    fn page_doc(pages: usize, footer_digits: bool) -> Document {
+        Document {
+            source: "t".into(),
+            provenance: None,
+            pages: (1..=pages)
+                .map(|p| Page {
+                    number: p,
+                    width: 612.0,
+                    height: 792.0,
+                    elements: {
+                        let mut els = Vec::new();
+                        // body line in the middle of the page
+                        els.push(Element::Text(TextChunk {
+                            text: format!("body on page {p}"),
+                            bbox: BBox {
+                                x0: 50.0,
+                                y0: 500.0,
+                                x1: 200.0,
+                                y1: 515.0,
+                            },
+                            font_size: 10.0,
+                            font: None,
+                            page: p,
+                            confidence: 1.0,
+                            bold: false,
+                            hidden: false,
+                            source: None,
+                            group: None,
+                            tag: None,
+                        }));
+                        if footer_digits {
+                            // lone page-number line at the bottom margin
+                            els.push(Element::Text(TextChunk {
+                                text: p.to_string(),
+                                bbox: BBox {
+                                    x0: 300.0,
+                                    y0: 30.0,
+                                    x1: 315.0,
+                                    y1: 42.0,
+                                },
+                                font_size: 10.0,
+                                font: None,
+                                page: p,
+                                confidence: 1.0,
+                                bold: false,
+                                hidden: false,
+                                source: None,
+                                group: None,
+                                tag: None,
+                            }));
+                        }
+                        // a lone digit line in the body area must survive
+                        els.push(Element::Text(TextChunk {
+                            text: "28".into(),
+                            bbox: BBox {
+                                x0: 50.0,
+                                y0: 400.0,
+                                x1: 65.0,
+                                y1: 415.0,
+                            },
+                            font_size: 10.0,
+                            font: None,
+                            page: p,
+                            confidence: 1.0,
+                            bold: false,
+                            hidden: false,
+                            source: None,
+                            group: None,
+                            tag: None,
+                        }));
+                        els
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn page_number_margin_lines_are_dropped() {
+        let d = page_doc(3, true);
+        let blocks = page_blocks(&d);
+        let all: Vec<String> = blocks
+            .iter()
+            .flatten()
+            .map(|b| b.text.trim().to_string())
+            .collect();
+        assert!(all.iter().any(|t| t.contains("body on page 1")), "{all:?}");
+        assert!(
+            !all.iter().any(|t| t == "1" || t == "2" || t == "3"),
+            "page numbers dropped: {all:?}"
+        );
+        // Lone digits in the body area are NOT page numbers and survive.
+        assert!(
+            all.iter().any(|t| t == "28"),
+            "body lone digit kept: {all:?}"
+        );
+    }
+
+    #[test]
+    fn no_footer_no_drop() {
+        let d = page_doc(3, false);
+        let blocks = page_blocks(&d);
+        let all: Vec<String> = blocks
+            .iter()
+            .flatten()
+            .map(|b| b.text.trim().to_string())
+            .collect();
+        assert!(all.iter().any(|t| t == "28"), "body digit kept: {all:?}");
+    }
 }
+
 #[cfg(test)]
 mod tests {
     use super::*;
