@@ -58,6 +58,7 @@
 **版面/结构**：`--layout`、`--layout-model <path>`（YOLO 默认 / PPV2 自动识别）、`--table-model <dir>`、`--formula-model <dir>`、`--transcribe-model <dir>`。
 **输出阅读顺序**：markdown / text / chunks 三种格式共享同一几何阅读顺序——表格与图片按页内位置 splice 回正文（`layout::page_items`），不再沉到页尾；`follows` 要求水平重叠 + 顶边在浮动之下，双栏/多栏页面不会串列。RAG chunk 使用 `page_items_chunk`（绑定的图注并入图片 chunk，不重复输出）。
 **续表/无表头表**：markdown/text 渲染时，无表头的数据行（空 cell 或全数值）不再被当成表头画出 `---` 分隔线——列数与上一表相同则继承上一表表头（跨页有效），否则以注释标注后输出数据行（`table::looks_like_header_row` 判定）。
+**稀疏 ruled 表**：ruled 检测的"band 即行"路径（≥3 条宽横线）逐列填充率门槛为 40%（原文 60%），booktabs 式多空 cell 表（如 Attention 论文 Table 3 的 13 列变体对比表）可被检出；弱证据的 gap 推断路径仍保持 60% 严格门槛，正文/图形框不会因放宽而误检。
 **表格净化**：表格检测后统一过 `table::sanitize_tables`——高度 <18pt 的候选（公式/图形框线误检）整表丢弃；表内绝大多数 cell 为短文本而个别 cell 超长（>40 字符）时清空该 cell（正文泄漏防御）。单元格/表区收集均要求 chunk 尺寸不超出 cell/band（宽 >1.5×cell 宽或高 >2.5×cell 高的正文行不再被吸入）。
 **VLM**：`--vlm-describe`、`--vlm-tables`、`--vlm-url`、`--vlm-model`、`--vlm-api-key`。
 **图片**：`--image-dir <dir>`、`--image-embed`。

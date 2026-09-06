@@ -743,7 +743,12 @@ fn is_tabular(t: &Table, cells_wrap: bool) -> bool {
             .iter()
             .filter(|r| r.get(ci).is_some_and(|c| !c.text.trim().is_empty()))
             .count();
-        if filled * 10 <= nrows * 6 {
+        // Ruled bands (cells_wrap) carry strong wide-rule evidence, so sparse
+        // multi-column tables with many empty cells are legitimate; the loose
+        // path only demands 40% fill. The strict path (60%) stays for the
+        // gap-inferred attempt A where table evidence is weaker.
+        let min_filled = if cells_wrap { nrows * 4 } else { nrows * 6 };
+        if filled * 10 <= min_filled {
             return false;
         }
     }
@@ -1319,5 +1324,69 @@ mod tests {
             flat.contains("Transformer (base model)"),
             "verbose cell kept: {flat}"
         );
+    }
+
+    fn mk_sparse_table(nrows: usize, ncols: usize, dense: bool) -> Table {
+        // Deterministic: even rows fill the left half, odd rows the right
+        // half, so every column lands at ~50% fill (the booktabs case) —
+        // except `dense`, which fills every cell.
+        Table {
+            bbox: BBox {
+                x0: 0.0,
+                y0: 0.0,
+                x1: 100.0,
+                y1: 100.0,
+            },
+            page: 1,
+            rows: (0..nrows)
+                .map(|r| {
+                    let left = r % 2 == 0;
+                    (0..ncols)
+                        .map(|c| {
+                            let fill = dense || if left { c < ncols / 2 } else { c >= ncols / 2 };
+                            let text = if fill {
+                                format!("{c}{r}")
+                            } else {
+                                String::new()
+                            };
+                            Cell {
+                                text,
+                                bbox: BBox {
+                                    x0: 0.0,
+                                    y0: 0.0,
+                                    x1: 10.0,
+                                    y1: 10.0,
+                                },
+                                row_span: 1,
+                                col_span: 1,
+                                merged: false,
+                            }
+                        })
+                        .collect()
+                })
+                .collect(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn is_tabular_sparse_band_table_accepted() {
+        // Sparse multi-column academic table (booktabs, many empty cells):
+        // ruled attempt B (cells_wrap) must accept ~50% fill.
+        let t = mk_sparse_table(8, 13, false);
+        assert!(is_tabular(&t, true), "sparse ruled table accepted");
+    }
+
+    #[test]
+    fn is_tabular_sparse_strict_path_rejects() {
+        // The same sparsity fails the strict gap-inferred path (60% gate).
+        let t = mk_sparse_table(8, 13, false);
+        assert!(!is_tabular(&t, false), "sparse strict path rejected");
+    }
+
+    #[test]
+    fn is_tabular_dense_band_table_accepted() {
+        let t = mk_sparse_table(8, 13, true);
+        assert!(is_tabular(&t, true), "dense ruled table accepted");
     }
 }

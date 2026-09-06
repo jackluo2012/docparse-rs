@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Sparse ruled tables: the ruled attempt-B path (each band is one row, backed
+  by >=3 wide rules) now accepts ~40% per-column fill instead of 60%, so
+  booktabs-style tables with many empty cells are detected — e.g. Table 3 of
+  the Attention paper (13 cols: header/base/(A)/(B)) is now a real table
+  instead of body text. The gap-inferred attempt-A path keeps the strict 60%
+  gate, and a probe confirmed no new false positives on the real paper.
 - Table cell sanitation & pseudo-table veto: figure/equation boxes whose
   vector rules form a grid no longer parse as tables (a table candidate
   shorter than ~2 text lines is dropped), and surrounding prose whose center
