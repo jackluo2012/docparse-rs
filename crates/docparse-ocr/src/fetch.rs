@@ -318,7 +318,13 @@ fn download_one(agent: &ureq::Agent, url: &str, name: &str, tmp: &Path) -> Resul
             let mut file =
                 std::fs::File::create(tmp).with_context(|| format!("create {}", tmp.display()))?;
             let n = std::io::copy(&mut resp.into_reader(), &mut file)?;
-            anyhow::ensure!(n > 1024, "{name} too small ({n} bytes) — source moved?");
+            // A "too small" file is only a failure when it's an un-dereferenced
+            // git-LFS *pointer* (the source moved / LFS broke) — a tiny real
+            // file (a 31-byte README.md, say) is legitimate content. Whole-repo
+            // tiers must not die on their own metadata files.
+            if n <= 1024 && looks_like_lfs_pointer(tmp) {
+                anyhow::bail!("{name} is a git-LFS pointer ({n} bytes) — source moved?");
+            }
             Ok(n)
         })();
         match result {
@@ -335,9 +341,38 @@ fn download_one(agent: &ureq::Agent, url: &str, name: &str, tmp: &Path) -> Resul
     Err(last_err.unwrap()).context("3 attempts failed")
 }
 
+/// True when the first bytes of `path` are the standard git-LFS pointer
+/// prelude (`version https://git-lfs.github.com/spec/v1`). Reads only the
+/// file head — never the (potentially huge) body.
+fn looks_like_lfs_pointer(path: &Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 24];
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let Ok(n) = f.read(&mut head) else {
+        return false;
+    };
+    head[..n].starts_with(b"version https://git-lfs")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lfs_pointer_detection() {
+        let d = std::env::temp_dir().join(format!("docparse-lfs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let ptr = d.join("ptr");
+        std::fs::write(&ptr, b"version https://git-lfs.github.com/spec/v1\noid sha256:...\n").unwrap();
+        assert!(looks_like_lfs_pointer(&ptr));
+        let tiny = d.join("tiny");
+        std::fs::write(&tiny, b"# just a small readme\n").unwrap();
+        assert!(!looks_like_lfs_pointer(&tiny), "a small real file is not a pointer");
+        std::fs::remove_dir_all(&d).ok();
+    }
 
     #[test]
     fn glob_matches_starstar_prefix() {

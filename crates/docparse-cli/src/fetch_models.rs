@@ -54,15 +54,26 @@ impl FetchTierArg {
 /// by overwriting.
 pub fn run(tier: FetchTierArg, root: &Path) -> anyhow::Result<()> {
     let tiers = tier.tiers();
+    let mut failures: Vec<String> = Vec::new();
     for t in tiers {
         let dir = root.join(t.dir());
         eprintln!("{} → {}", t.summary(), dir.display());
-        docparse_ocr::fetch::fetch_tier(*t, &dir, |name| eprintln!("  ↓ {name}"))
-            .with_context(|| format!("fetch {}", t.dir()))?;
-        match t.files() {
-            Some(files) => eprintln!("  ✓ {} file(s) → {}", files.len(), dir.display()),
-            None => eprintln!("  ✓ all files → {}", dir.display()),
+        // Multi-tier runs (all) must not let one broken tier block the rest —
+        // record the failure, keep going, and fail the run at the end (the
+        // exit code stays honest).
+        match docparse_ocr::fetch::fetch_tier(*t, &dir, |name| eprintln!("  ↓ {name}")) {
+            Ok(()) => match t.files() {
+                Some(files) => eprintln!("  ✓ {} file(s) → {}", files.len(), dir.display()),
+                None => eprintln!("  ✓ all files → {}", dir.display()),
+            },
+            Err(e) => {
+                eprintln!("  ✗ {}: {e:#}", t.dir());
+                failures.push(t.dir().to_string());
+            }
         }
+    }
+    if !failures.is_empty() {
+        anyhow::bail!("failed tier(s): {} (others installed fine)", failures.join(", "));
     }
     if tiers.contains(&docparse_ocr::fetch::Tier::Ppv2) {
         eprintln!();
