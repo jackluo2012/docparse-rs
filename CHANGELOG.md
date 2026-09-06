@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `serve`/`mcp --password <PW>` — encrypted-PDF password end-to-end: REST
+  `?password=` (documented in OpenAPI, with the localhost/LAN caveat) and an
+  optional `password` argument on all five MCP tools. The password is part of
+  the document-cache signature, so a different password (or none) never
+  replays another password's parse — entries are keyed per (content,
+  password) and verified e2e (miss→hit byte-identical, per-password entries).
+  Absent/wrong passwords keep their actionable errors (`--password` hint /
+  invalid-password). Test fixture uses lopdf's own public encrypt API
+  (EncryptionVersion::V2) to mint a real R2/RC4-40 PDF.
 - `serve`/`mcp --cache-dir <DIR>` — server-side document cache: repeated
   uploads (REST) or agent calls (MCP) of the same content + enhancement flags
   replay the stored **enhanced document** instead of re-parsing (the shared

@@ -687,6 +687,7 @@ dependencies = [
  "docparse-xlsx",
  "indicatif",
  "libc",
+ "lopdf",
  "rayon",
  "serde",
  "serde_json",

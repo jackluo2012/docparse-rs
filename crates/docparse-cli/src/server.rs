@@ -155,6 +155,11 @@ fn openapi_doc() -> serde_json::Value {
                                 "description": "chunks only: table chunk rendering." }),
                         json!({ "name": "resource_base", "in": "query", "required": false,
                                 "schema": { "type": "string" }, "description": "okf only: concept resource URI prefix." }),
+                        json!({ "name": "password", "in": "query", "required": false,
+                                "schema": { "type": "string" },
+                                "description": "PDF decryption password (encrypted PDFs only). Plain query \
+                                                string — this server is intended for localhost/LAN; do not \
+                                                expose it to untrusted networks." }),
                         bool_param(
                             "ocr",
                             "OCR pages lacking machine-readable text (needs server --ocr-models).",
@@ -220,6 +225,9 @@ async fn parse(
     let envelope = flag("envelope");
     // chunks 专用：?table_format=markdown 让表格 chunk 出 GitHub 管道表（默认 tab/换行）。
     let table_markdown = q.get("table_format").map(String::as_str) == Some("markdown");
+    // Encrypted-PDF password (plain query string — this server is localhost /
+    // LAN-oriented; see the OpenAPI note).
+    let password = q.get("password").cloned();
     let opts = crate::EnhanceOpts {
         ocr: flag("ocr"),
         images_embedded,
@@ -260,9 +268,10 @@ async fn parse(
     if format == "okf" {
         let resource_base = q.get("resource_base").cloned().unwrap_or_default();
         let (tp, tn, st) = (tmp.clone(), name.clone(), state.clone());
-        let res =
-            tokio::task::spawn_blocking(move || render_okf_tar(&tp, &tn, opts, resource_base, &st))
-                .await;
+        let res = tokio::task::spawn_blocking(move || {
+            render_okf_tar(&tp, &tn, opts, resource_base, password.clone(), &st)
+        })
+        .await;
         let elapsed_ms = started.elapsed().as_millis().to_string();
         std::fs::remove_file(&tmp).ok();
         return match res {
@@ -296,8 +305,13 @@ async fn parse(
         // Model load (first enhanced request only) and inference are both
         // CPU-bound — they belong on the blocking pool with the parse. The
         // cache lookup/replay runs here too (content hash is file I/O).
-        let (doc, cached) =
-            crate::parse_enhanced_cached(&task_path, Some(&task_name), opts, &task_state)?;
+        let (doc, cached) = crate::parse_enhanced_cached(
+            &task_path,
+            Some(&task_name),
+            opts,
+            password.clone(),
+            &task_state,
+        )?;
         let (body, content_type) = render_doc(&doc, &format, envelope, table_markdown)?;
         Ok::<_, anyhow::Error>((body, content_type, cached))
     })
@@ -363,6 +377,7 @@ fn cache_header(enabled: bool, cached: Option<bool>) -> Option<(&'static str, St
 /// the stored document instead of re-parsing (see
 /// [`crate::parse_enhanced_cached`]).
 #[cfg(test)]
+#[allow(clippy::too_many_arguments)]
 fn render(
     path: &Path,
     source_name: &str,
@@ -371,8 +386,10 @@ fn render(
     envelope: bool,
     table_markdown: bool,
     state: &crate::EnhanceState,
+    password: Option<String>,
 ) -> anyhow::Result<(String, &'static str)> {
-    let (doc, _cached) = crate::parse_enhanced_cached(path, Some(source_name), opts, state)?;
+    let (doc, _cached) =
+        crate::parse_enhanced_cached(path, Some(source_name), opts, password, state)?;
     render_doc(&doc, format, envelope, table_markdown)
 }
 
@@ -434,9 +451,11 @@ fn render_okf_tar(
     source_name: &str,
     opts: crate::EnhanceOpts,
     resource_base: String,
+    password: Option<String>,
     state: &crate::EnhanceState,
 ) -> anyhow::Result<(Vec<u8>, Option<bool>)> {
-    let (doc, cached) = crate::parse_enhanced_cached(path, Some(source_name), opts, state)?;
+    let (doc, cached) =
+        crate::parse_enhanced_cached(path, Some(source_name), opts, password, state)?;
     let okf_opts = crate::okf_options_for(path, resource_base, false);
     Ok((docparse_core::okf::build(&doc, &okf_opts).to_tar(), cached))
 }
@@ -492,6 +511,7 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         let (b, _) = render(
@@ -502,6 +522,7 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         assert_eq!(a, b, "same input must render byte-identically");
@@ -525,7 +546,8 @@ mod tests {
             Default::default(),
             false,
             false,
-            &test_state()
+            &test_state(),
+            None,
         )
         .is_err());
     }
@@ -543,6 +565,7 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         assert_eq!(ct, "application/json");
@@ -558,6 +581,7 @@ mod tests {
             true,
             false,
             &st,
+            None,
         )
         .unwrap();
         let env_json: serde_json::Value = serde_json::from_str(&env).unwrap();
@@ -630,6 +654,7 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         assert_eq!(
@@ -645,6 +670,7 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         assert_eq!(a, b, "cache hit must replay byte-identical output");
@@ -665,6 +691,7 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         assert_ne!(a, c, "content change must miss");
@@ -679,10 +706,94 @@ mod tests {
             false,
             false,
             &st,
+            None,
         )
         .unwrap();
         assert_ne!(c, d, "source_name is part of the key");
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn password_parses_encrypted_pdf_and_drives_cache_key() {
+        let dir =
+            std::env::temp_dir().join(format!("docparse-rest-pwcache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let st = crate::EnhanceState::new(
+            "models/ppocr".into(),
+            "models/layout/doclayout_yolo.onnx".into(),
+            None,
+            None,
+        )
+        .with_cache_dir(Some(dir.clone()));
+
+        let path = std::env::temp_dir().join("docparse-rest-encrypted.pdf");
+        std::fs::write(&path, crate::test_fixtures::encrypted_pdf("secret")).unwrap();
+
+        // No password -> the shared actionable encrypted-PDF error.
+        let err = render(
+            &path,
+            "secret.pdf",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+            None,
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("encrypted"), "got: {err}");
+
+        // Wrong password -> invalid-password error.
+        let err = render(
+            &path,
+            "secret.pdf",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+            Some("wrong".to_string()),
+        )
+        .unwrap_err();
+        assert!(format!("{err}").contains("password"), "got: {err}");
+
+        // Correct password parses; the repeat is a byte-identical cache hit.
+        let (a, _) = render(
+            &path,
+            "secret.pdf",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+            Some("secret".to_string()),
+        )
+        .unwrap();
+        assert!(
+            a.contains("Secret"),
+            "decrypted text must be extracted: {a}"
+        );
+        let (b, _) = render(
+            &path,
+            "secret.pdf",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+            Some("secret".to_string()),
+        )
+        .unwrap();
+        assert_eq!(a, b, "same password must hit and replay byte-identically");
+
+        // The password is part of the cache signature: one (content, password)
+        // triple stores exactly one entry.
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "one entry per (content, password) triple"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

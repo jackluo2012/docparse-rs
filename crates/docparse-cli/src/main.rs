@@ -673,7 +673,7 @@ impl EnhanceState {
     /// keeps serving entries distinct from batch entries sharing an identity.
     /// **Any new output-affecting serving option MUST be added here**, or a
     /// changed option would replay stale bytes.
-    pub(crate) fn cache_signature(&self, opts: &EnhanceOpts) -> String {
+    pub(crate) fn cache_signature(&self, opts: &EnhanceOpts, password: Option<&str>) -> String {
         use std::fmt::Write as _;
         let mut s = String::new();
         let _ = write!(s, "srv1;");
@@ -701,6 +701,9 @@ impl EnhanceState {
         if let Some(v) = &self.vlm {
             let _ = write!(s, ";vlm_url={:?};vlm_model={:?}", v.url, v.model);
         }
+        // The password changes what the document contains — a different
+        // password (or none) must never replay another password's parse.
+        let _ = write!(s, ";password={:?}", password);
         s
     }
 
@@ -803,7 +806,10 @@ impl EnhanceState {
 /// caching is disabled, `Some(true)` on a hit, `Some(false)` on a miss that
 /// stored. `source_name` replaces the document's source annotation (REST: the
 /// sanitized upload name — it appears in the output, so it is part of the key
-/// identity); `None` keeps the parser's default (MCP: the path).
+/// identity); `None` keeps the parser's default (MCP: the path). `password`
+/// decrypts encrypted PDFs (`None` for everything else) — it is part of the
+/// cache signature, so a different password never replays another password's
+/// parse.
 ///
 /// The cached unit is the enhanced document — the shared heavy step behind
 /// every format and tool. Rendering happens after the lookup, so format/tool
@@ -813,11 +819,14 @@ pub(crate) fn parse_enhanced_cached(
     path: &std::path::Path,
     source_name: Option<&str>,
     opts: EnhanceOpts,
+    password: Option<String>,
     state: &EnhanceState,
 ) -> anyhow::Result<(docparse_core::ir::Document, Option<bool>)> {
     // `EnhanceOpts` is Copy: the same opts can be handed to every branch.
-    let parse_fresh = |opts: EnhanceOpts| -> anyhow::Result<docparse_core::ir::Document> {
-        let mut doc = parse_path_with(path, opts.images_embedded, None)?;
+    let parse_fresh = |opts: EnhanceOpts,
+                       password: Option<&str>|
+     -> anyhow::Result<docparse_core::ir::Document> {
+        let mut doc = parse_path_with(path, opts.images_embedded, password.map(str::to_string))?;
         doc = state.apply(doc, path, opts)?;
         if let Some(name) = source_name {
             doc.source = name.to_string();
@@ -825,10 +834,10 @@ pub(crate) fn parse_enhanced_cached(
         Ok(doc)
     };
     let Some(cache_dir) = &state.cache_dir else {
-        return Ok((parse_fresh(opts)?, None));
+        return Ok((parse_fresh(opts, password.as_deref())?, None));
     };
     let sha = crate::cache::content_sha(path)?;
-    let sig = state.cache_signature(&opts);
+    let sig = state.cache_signature(&opts, password.as_deref());
     let identity = source_name
         .map(str::to_string)
         .unwrap_or_else(|| path.display().to_string());
@@ -839,7 +848,7 @@ pub(crate) fn parse_enhanced_cached(
             return Ok((doc, Some(true)));
         }
     }
-    let doc = parse_fresh(opts)?;
+    let doc = parse_fresh(opts, password.as_deref())?;
     let json = serde_json::to_string(&doc)?;
     let entry = crate::cache::CacheEntry::new(sha.clone(), doc.pages.len(), json);
     let _ = crate::cache::store_identity(cache_dir, &identity, &sha, &sig, &entry);
@@ -1454,4 +1463,75 @@ fn iso8601_utc(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    /// Minimal encrypted PDF: Standard security handler, Revision 2, 40-bit
+    /// RC4 keys (PDF 1.4). Produced through lopdf's *own public encrypt API*
+    /// — the same library docparse uses to decrypt — so the fixture can never
+    /// drift from what the parser actually supports. One page, Helvetica
+    /// Type1 (a standard-14 font: ASCII text extracts without any embedded
+    /// font), content stream "Secret".
+    pub(crate) fn encrypted_pdf(password: &str) -> Vec<u8> {
+        use lopdf::{
+            dictionary, Document, EncryptionState, EncryptionVersion, Object, Permissions, Stream,
+        };
+
+        let mut doc = Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"BT /F1 24 Tf 72 720 Td (Secret) Tj ET".to_vec(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+        doc.trailer.set(
+            "ID",
+            Object::Array(vec![
+                Object::string_literal(b"docparse-test-id"),
+                Object::string_literal(b"docparse-test-id"),
+            ]),
+        );
+
+        let version = EncryptionVersion::V2 {
+            document: &doc,
+            owner_password: "docparse-owner",
+            user_password: password,
+            key_length: 40,
+            permissions: Permissions::all(),
+        };
+        let state = EncryptionState::try_from(version).expect("valid v2 encryption state");
+        doc.encrypt(&state).expect("encrypt fixture");
+
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).expect("save fixture");
+        bytes
+    }
 }

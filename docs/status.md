@@ -52,6 +52,8 @@
 
 **Phase 20（服务端增量缓存,2026-09-06,已实施）**：`serve`/`mcp` 接入 `--cache-dir`——缓存单元是**增强后 Document**（所有格式/工具共享的重活），键 = (source_name 或路径, 内容 SHA-256, 增强参数 + 模型集签名)；渲染参数不进键（查后渲染，不碎片化缓存）。`parse_enhanced_cached` 统一两接口管线；REST 命中回放逐字节一致并加 `x-docparse-cache: hit|miss` 响应头（body 不变约定沿用 `x-docparse-ms` 先例）；MCP 纯加速不标注（JSON-RPC 无头通道）。`format=okf` 走同一文档缓存（tar 本身仍逐请求重建）。3 单测（cache identity 变体 + REST 命中/内容变更 miss/source_name 进键 + MCP 跨工具共享单条目）+ e2e（真实二进制：MCP 双跑字节一致且 get_chunks+outline 共享 1 条目 / REST miss→hit + 头部）+ workspace 全绿 + clippy 零新增。见 [devlogs/2026-09-06-server-document-cache.md](devlogs/2026-09-06-server-document-cache.md)。**未做**：缓存修剪（旧键滞留磁盘，与 CLI 同）。
 
+**Phase 21（服务端加密 PDF 密码,2026-09-06,已实施）**：把 CLI 已有 `--password` 接入 `serve`/`mcp`——REST `/parse?password=`（OpenAPI 已记录，含仅限本地/LAN 使用边界说明）+ MCP 五个工具各加可选 `password` 参数（仅加密 PDF 需传）。`parse_enhanced_cached` 增加 `password` 参数并同步进 `cache_signature`：密码是输出决定性选项，不同密码（或无密码）绝不回放他人解析的缓存条目，键 = (来源, 内容哈希, 增强签名, 密码)。无/错密码保持可操作错误（`--password` 提示 / invalid-password）。测试：REST 无/错/对密码 → 422/422/200，命中回放字节一致，每 (内容,密码) 恰 1 缓存条目；MCP 无密码 isError / 正确密码解出密文 / 错密码 isError / 跨工具共享单条目；夹具改用 **lopdf 官方加密 API**（`EncryptionVersion::V2` + `Document::encrypt`）生成真实 R2/RC4-40 加密 PDF——手写 RC4-40 生成器弃用（曾踩 U=RC4(file_key,PAD) 等规范细节，官方 API 消除漂移）。e2e 真实二进制（CLI 三态 + REST 四态 + MCP 三态 + 跨工具缓存）全过 + workspace 全绿 + docparse-cli clippy 零新增。见 [devlogs/2026-09-06-server-password.md](devlogs/2026-09-06-server-password.md)。
+
 ## 2. 记分牌（两套互补）
 
 ① **OmniDocBench**（人工真值，模型路径，第一参考）——文本/公式（UniRec）各 ~0.87（论文子集近论文级）、表结构 TEDS_X 0.810（median 0.895，80 表）、套官方公式 Overall ≈75（对标 OpenDoc-0.1B 90.67 / Docling ~80–85 / Marker 78.44）；**短板=学术难表**（端到端 0.52，模型天花板）+ 轻量 `--ocr` mobile（0.42–0.44，用 `--transcribe-model` 提质）。

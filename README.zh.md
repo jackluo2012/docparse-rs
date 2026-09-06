@@ -99,6 +99,7 @@ docparse input.pdf --password secret   # 解析加密 PDF（标准安全处理�
 claude mcp add docparse -- docparse mcp     # MCP 工具：parse_document / get_chunks / locate
 docparse serve --port 8642                                  # REST：POST /parse（multipart）+ GET /healthz
 curl -F "file=@doc.pdf" "http://127.0.0.1:8642/parse?format=chunks&ocr=true"
+curl -F "file=@doc.pdf" "http://127.0.0.1:8642/parse?password=secret"   # 加密 PDF：与 CLI --password 同源（MCP 各工具也接受 password 参数）
 ```
 
 ```python

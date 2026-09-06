@@ -120,6 +120,8 @@ fn tool_specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Local file path" },
+                    "password": { "type": "string",
+                                  "description": "PDF decryption password (encrypted PDFs only)" },
                     "format": { "type": "string", "enum": ["json", "markdown", "text"],
                                 "description": "Output format (default json)" },
                     "ocr": { "type": "boolean",
@@ -150,6 +152,8 @@ fn tool_specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Local file path" },
+                    "password": { "type": "string",
+                                  "description": "PDF decryption password (encrypted PDFs only)" },
                     "ocr": { "type": "boolean",
                              "description": "OCR pages lacking machine-readable text (default false)" },
                     "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" },
@@ -172,6 +176,8 @@ fn tool_specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Local file path" },
+                    "password": { "type": "string",
+                                  "description": "PDF decryption password (encrypted PDFs only)" },
                     "id": { "type": "integer",
                              "description": "Return only this section's subtree (default: whole document, root id 0)" },
                     "max_depth": { "type": "integer",
@@ -193,6 +199,8 @@ fn tool_specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Local file path" },
+                    "password": { "type": "string",
+                                  "description": "PDF decryption password (encrypted PDFs only)" },
                     "resource_base": { "type": "string",
                                        "description": "Prefix for concept resource URIs (default: bare basename)" },
                     "ocr": { "type": "boolean", "description": "OCR pages lacking machine-readable text first (default false)" },
@@ -209,6 +217,8 @@ fn tool_specs() -> Value {
                 "type": "object",
                 "properties": {
                     "path": { "type": "string", "description": "Local file path" },
+                    "password": { "type": "string",
+                                  "description": "PDF decryption password (encrypted PDFs only)" },
                     "page": { "type": "integer", "description": "1-based page number" },
                     "x": { "type": "number" },
                     "y": { "type": "number" },
@@ -459,6 +469,10 @@ fn parse_enhanced(
     state: &crate::EnhanceState,
 ) -> anyhow::Result<docparse_core::ir::Document> {
     let path = std::path::Path::new(str_arg(args, "path")?);
+    let password = args
+        .get("password")
+        .and_then(Value::as_str)
+        .map(str::to_string);
     let images_embedded = args.get("images").and_then(Value::as_str) == Some("embedded");
     let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     let opts = crate::EnhanceOpts {
@@ -470,7 +484,7 @@ fn parse_enhanced(
         vlm_describe: flag("vlm_describe"),
         vlm_tables: flag("vlm_tables"),
     };
-    crate::parse_enhanced_cached(path, None, opts, state).map(|(doc, _)| doc)
+    crate::parse_enhanced_cached(path, None, opts, password, state).map(|(doc, _)| doc)
 }
 
 fn tool_parse_document(args: &Value, state: &crate::EnhanceState) -> anyhow::Result<String> {
@@ -916,5 +930,35 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn password_opens_encrypted_pdf_via_tool() {
+        let st = state();
+        let path = std::env::temp_dir().join("docparse-mcp-encrypted.pdf");
+        std::fs::write(&path, crate::test_fixtures::encrypted_pdf("secret")).unwrap();
+
+        // Without a password the tool reports an error, not garbage.
+        let call = req(
+            "tools/call",
+            json!({ "name": "get_chunks", "arguments": { "path": path } }),
+        );
+        let r0 = handle_line(&call, &st).expect("response");
+        let v0: serde_json::Value = serde_json::from_str(&r0).unwrap();
+        assert_eq!(
+            v0["result"]["isError"], true,
+            "encrypted PDF without password must error"
+        );
+
+        // With the right password it parses and the decrypted text appears.
+        let call = req(
+            "tools/call",
+            json!({ "name": "get_chunks", "arguments": { "path": path, "password": "secret" } }),
+        );
+        let r1 = handle_line(&call, &st).expect("response");
+        let v1: serde_json::Value = serde_json::from_str(&r1).unwrap();
+        assert_eq!(v1["result"]["isError"], false);
+        assert!(r1.contains("Secret"), "decrypted content must appear");
+        let _ = std::fs::remove_file(&path);
     }
 }
