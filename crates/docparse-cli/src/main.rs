@@ -1,6 +1,7 @@
 //! `docparse` — parse a document into JSON / Markdown / text.
 
 mod batch;
+mod fetch_models;
 mod mcp;
 mod progress;
 mod resources;
@@ -335,6 +336,18 @@ enum Command {
         #[arg(long)]
         vlm_api_key: Option<String>,
     },
+    /// Install the optional neural model tiers (OCR / layout / UniRec) in pure
+    /// Rust — no HuggingFace CLI, no Python, no shell scripts. Downloads from
+    /// the original HuggingFace repos via the tree API (all Apache-2.0).
+    FetchModels {
+        /// Which tier to fetch: ocr, ppocr-v6, layout, unirec, ppv2, all.
+        #[arg(value_enum)]
+        tier: fetch_models::FetchTierArg,
+        /// Models root directory; tier subdirs (ppocr/, ppocr-v6/, layout/,
+        /// unirec/, layout-ppv2/) are created under it.
+        #[arg(long, value_name = "DIR", default_value = "models")]
+        dir: PathBuf,
+    },
     /// Print (or write) the machine-readable output contract: JSON Schema
     /// (draft 2020-12) for every output format, generated from the code.
     Schema {
@@ -465,7 +478,7 @@ fn ensure_ocr_models(dir: &std::path::Path) -> anyhow::Result<()> {
     if docparse_ocr::fetch::models_present(dir) {
         return Ok(());
     }
-    let fetch_cmd = "./scripts/fetch-models.sh ppocr-v6";
+    let fetch_cmd = "docparse fetch-models ppocr-v6";
     if !docparse_ocr::fetch::is_default_v6_dir(dir) {
         anyhow::bail!(
             "OCR models not found in {}\n  download them with: {fetch_cmd}",
@@ -887,6 +900,7 @@ fn main() -> anyhow::Result<()> {
                     ),
                 )
             }
+            Command::FetchModels { tier, dir } => return fetch_models::run(*tier, dir),
             Command::Schema { name, write } => return schema::run(name.as_deref(), *write),
         }
     }

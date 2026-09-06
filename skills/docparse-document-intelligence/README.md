@@ -43,7 +43,7 @@ cargo build --release        # produces ./target/release/docparse
 
 Add `./target/release/docparse` to PATH as `docparse`, or let the skill call the
 built binary directly. Optional model files (OCR / layout / table / formula) are
-**opt-in** — only fetched when you use an enhancement flag (`./scripts/fetch-models.sh …`,
+**opt-in** — only fetched when you use an enhancement flag (`docparse fetch-models …`,
 or `--ocr` auto-downloads PP-OCRv6 on first interactive use).
 
 ## Quick start

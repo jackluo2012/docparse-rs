@@ -106,7 +106,7 @@ models/
   unirec/          # UniRec-0.1B encoder/decoder ONNX + tokenizer  ← --table-model / --formula-model / --transcribe-model
 ```
 
-Fetch helper: `./scripts/fetch-models.sh ppocr-v6` (and friends). Model files are
+Fetch helper: `docparse fetch-models ppocr-v6` (and friends). Model files are
 gitignored — they download on demand.
 
 ## Provenance (`source` tags in `-f json`)

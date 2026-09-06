@@ -211,7 +211,7 @@ docparse scan.pdf -f markdown --ocr --ocr-models models/ppocr   # fall back to P
 On first use, if `models/ppocr-v6` is missing the CLI offers to download it
 (~7 MB, Apache-2.0) — but **only in an interactive terminal**. In a non-TTY
 context (script, pipe, CI, or driving MCP/REST) it errors instead. To fetch
-non-interactively, either run `./scripts/fetch-models.sh ppocr-v6` first or set
+non-interactively, either run `docparse fetch-models ppocr-v6` first or set
 `DOCPARSE_OCR_DOWNLOAD=1`:
 
 ```bash
@@ -269,7 +269,7 @@ not change results.
 | Tables missed on messy layout | `--layout-model …PP-DoclayoutV2_simp.onnx` (≈3× YOLO table detection) |
 | Very large PDF | Stay on the fast path; enhancers are per-page and opt-in — don't add them blindly |
 | Non-PDF format + a PDF-only flag | PDF-only enhancers (`--layout`, `--table-model`, `--formula-model`, `--vlm-*`) are silently skipped for other formats |
-| Models missing in non-TTY | Pre-fetch with `./scripts/fetch-models.sh …` or set `DOCPARSE_OCR_DOWNLOAD=1` |
+| Models missing in non-TTY | Pre-fetch with `docparse fetch-models …` or set `DOCPARSE_OCR_DOWNLOAD=1` |
 
 ## Output conventions
 

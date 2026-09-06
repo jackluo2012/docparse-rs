@@ -59,7 +59,7 @@
 **VLM**：`--vlm-describe`、`--vlm-tables`、`--vlm-url`、`--vlm-model`、`--vlm-api-key`。
 **图片**：`--image-dir <dir>`、`--image-embed`。
 **质量/可观测**：`--quality`、`--profile`、`--route-plan`（均出 JSON 到 stderr）、`--quality-threshold <float>`（复核闸门：无文本层页恒列出，乱码率超阈值页列出，JSON 清单到 stderr，入库前人工复核）、`--progress auto\|always\|never\|json`、`-q/--quiet`、`--stats`。
-**子命令**：`mcp`、`serve --port`、`schema [--name N] [--write]`。
+**子命令**：`mcp`、`serve --port`、`schema [--name N] [--write]`、`fetch-models <tier> [--dir DIR]`（纯 Rust 模型下载：ocr / ppocr-v6 / layout / unirec / ppv2 / all，HF tree API，无需 hf CLI / Python / shell）。
 
 ---
 

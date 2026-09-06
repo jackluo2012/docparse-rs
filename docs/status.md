@@ -46,6 +46,8 @@
 
 **Phase 17（加密 PDF 支持,2026-09-06,已实施）**：`--password <pw>` 解锁加密 PDF（lopdf 标准安全处理器：RC4 R2-R4 / AES-128 V4 / AES-256 V5-R5/R6）。无密码加载加密 PDF 报明确错误（此前静默解析乱码对象）；密码错误报 "invalid password"；解密输出与明文逐字节一致（空用户密码文档无需传参）。4 单测 + e2e（R2/RC4-40 样例：无密码/错密码/正确密码/空密码四态 + 内容一致性）+ clippy 零新增。见 [devlogs/2026-09-06-encrypted-pdf-password.md](devlogs/2026-09-06-encrypted-pdf-password.md)。**未做**：REST/MCP 参数（签名已预留）。
 
+**Phase 18（fetch-models 纯 Rust 化,2026-09-06,已实施）**：`docparse fetch-models <tier>` 内建模型下载，替代 `scripts/fetch-models.sh` + HuggingFace CLI 的 shell/Python 依赖。HF tree API 列目录 + glob 匹配（扛仓库重组）+ resolve 直链下载，5 个 tier（ocr / ppocr-v6 / layout / unirec / ppv2）+ all；`ensure_ocr_models`（首次 OCR 提示下载）与脚本（降级为薄封装）均指向内建命令。3 单测（glob 匹配 ×2 + tier 规格自检）+ e2e（真实下载 ppocr-v6 4 文件 ~7MB）+ workspace 全绿 + clippy 零新增。见 [devlogs/2026-09-06-fetch-models-builtin.md](devlogs/2026-09-06-fetch-models-builtin.md)。**未做**：下载并行化（顺序下载，简单可预期）。
+
 ## 2. 记分牌（两套互补）
 
 ① **OmniDocBench**（人工真值，模型路径，第一参考）——文本/公式（UniRec）各 ~0.87（论文子集近论文级）、表结构 TEDS_X 0.810（median 0.895，80 表）、套官方公式 Overall ≈75（对标 OpenDoc-0.1B 90.67 / Docling ~80–85 / Marker 78.44）；**短板=学术难表**（端到端 0.52，模型天花板）+ 轻量 `--ocr` mobile（0.42–0.44，用 `--transcribe-model` 提质）。

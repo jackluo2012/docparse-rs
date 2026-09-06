@@ -7,6 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `fetch-models <tier>` — install the optional neural model tiers in pure
+  Rust over the HuggingFace tree API: `ocr` / `ppocr-v6` (default OCR) /
+  `layout` / `unirec` / `ppv2` / `all`, into `--dir` (default `models/`, tier
+  subdirs like the old script). No `hf` CLI, Python or shell required; the
+  first-use OCR prompt and `scripts/fetch-models.sh` (now a thin wrapper)
+  both point here. Globs match against the live repo listing, so specs
+  survive repo reorganizations.
 - `--password <pw>` — parse encrypted PDFs (standard security handler via
   lopdf: RC4 R2-R4, AES-128 V4, AES-256 V5/R5/R6). Loading an encrypted PDF
   without a password now fails with an actionable message instead of parsing

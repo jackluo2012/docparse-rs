@@ -191,12 +191,12 @@ All Apache-2.0, fetched from their original repos as external files — never ba
 
 ```bash
 # --ocr's default models are also auto-offered on first use — this is just the explicit path:
-./scripts/fetch-models.sh ppocr-v6   # --ocr (default)     (~7 MB)
-./scripts/fetch-models.sh ocr        # --ocr v4 fallback   (~16 MB)
-./scripts/fetch-models.sh layout     # --layout (default)  (~75 MB)
-./scripts/fetch-models.sh unirec     # --table/formula/transcribe-model (~700 MB)
-./scripts/fetch-models.sh ppv2       # --layout-model ppv2 (~210 MB + a local prep step)
-./scripts/fetch-models.sh all
+docparse fetch-models ppocr-v6   # --ocr (default)     (~7 MB)
+docparse fetch-models ocr        # --ocr v4 fallback   (~16 MB)
+docparse fetch-models layout     # --layout (default)  (~75 MB)
+docparse fetch-models unirec     # --table/formula/transcribe-model (~700 MB)
+docparse fetch-models ppv2       # --layout-model ppv2 (~210 MB + a local prep step)
+docparse fetch-models all
 ```
 
 Needs the HuggingFace CLI (`pip install -U huggingface_hub`); `ppv2` additionally needs `onnx`+`onnxsim` to static-ize its graph for `tract` (the script prints the one-liner). The `ppocr-v6` default needs no prep — the loader reads PaddleOCR's raw ONNX directly (tract's `ignore_value_info` handles its dynamic graph) and parses the char dict out of the rec yml.

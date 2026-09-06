@@ -17,7 +17,7 @@ The core binary needs **no models** — born-digital PDFs and every other format
 parse with zero downloads. Optional neural features pull models on demand:
 
 ```bash
-./scripts/fetch-models.sh ocr     # see README "Optional models" for all tiers
+docparse fetch-models ocr     # see README "Optional models" for all tiers
 ```
 
 ## Before you open a PR

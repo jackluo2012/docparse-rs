@@ -154,11 +154,11 @@ Cargo workspace，**17 个 crate**。核心不变量：**`core` 不依赖任何 
 全部 Apache-2.0，从各自原始仓库拉取为外部文件，不进二进制。核心**一个都不需要**：数字版 PDF 与其他所有格式零下载即可解析。按功能档位下载：
 
 ```bash
-./scripts/fetch-models.sh ocr        # --ocr               (~16 MB)
-./scripts/fetch-models.sh layout     # --layout（默认）     (~75 MB)
-./scripts/fetch-models.sh unirec     # --table/formula/transcribe-model (~700 MB)
-./scripts/fetch-models.sh ppv2       # --layout-model ppv2 (~210 MB + 一步本地预处理)
-./scripts/fetch-models.sh all
+docparse fetch-models ocr        # --ocr               (~16 MB)
+docparse fetch-models layout     # --layout（默认）     (~75 MB)
+docparse fetch-models unirec     # --table/formula/transcribe-model (~700 MB)
+docparse fetch-models ppv2       # --layout-model ppv2 (~210 MB + 一步本地预处理)
+docparse fetch-models all
 ```
 
 需 HuggingFace CLI（`pip install -U huggingface_hub`）；`ppv2` 另需 `onnx`+`onnxsim` 把图静态化给 `tract`（脚本会打印该命令）。
