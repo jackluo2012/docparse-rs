@@ -176,6 +176,16 @@ fn openapi_doc() -> serde_json::Value {
                     "responses": {
                         "200": {
                             "description": "Parsed output (media type depends on format).",
+                            "headers": {
+                                "x-docparse-ms": {
+                                    "description": "Request handling time in milliseconds.",
+                                    "schema": { "type": "string" }
+                                },
+                                "x-docparse-cache": {
+                                    "description": "hit|miss — present only when the server was started with --cache-dir.",
+                                    "schema": { "type": "string", "enum": ["hit", "miss"] }
+                                }
+                            },
                             "content": {
                                 "application/json": { "schema": { "oneOf": [
                                     { "$ref": "#/components/schemas/document" },
@@ -256,14 +266,21 @@ async fn parse(
         let elapsed_ms = started.elapsed().as_millis().to_string();
         std::fs::remove_file(&tmp).ok();
         return match res {
-            Ok(Ok(tar)) => (
-                [
-                    (header::CONTENT_TYPE, "application/x-tar".to_string()),
-                    (header::HeaderName::from_static("x-docparse-ms"), elapsed_ms),
-                ],
-                tar,
-            )
-                .into_response(),
+            Ok(Ok((tar, cached))) => {
+                let mut headers = header::HeaderMap::new();
+                headers.insert(header::CONTENT_TYPE, "application/x-tar".parse().unwrap());
+                headers.insert(
+                    header::HeaderName::from_static("x-docparse-ms"),
+                    elapsed_ms.parse().unwrap(),
+                );
+                if let Some((name, value)) = cache_header(state.cache_dir.is_some(), cached) {
+                    headers.insert(
+                        header::HeaderName::from_static(name),
+                        value.parse().unwrap(),
+                    );
+                }
+                (headers, tar).into_response()
+            }
             Ok(Err(e)) => err(StatusCode::UNPROCESSABLE_ENTITY, &format!("{e:#}")),
             Err(e) => err(
                 StatusCode::INTERNAL_SERVER_ERROR,
@@ -274,34 +291,38 @@ async fn parse(
 
     let task_path = tmp.clone();
     let task_name = name.clone();
+    let task_state = state.clone();
     let rendered = tokio::task::spawn_blocking(move || {
         // Model load (first enhanced request only) and inference are both
-        // CPU-bound — they belong on the blocking pool with the parse.
-        render(
-            &task_path,
-            &task_name,
-            &format,
-            opts,
-            envelope,
-            table_markdown,
-            &state,
-        )
+        // CPU-bound — they belong on the blocking pool with the parse. The
+        // cache lookup/replay runs here too (content hash is file I/O).
+        let (doc, cached) =
+            crate::parse_enhanced_cached(&task_path, Some(&task_name), opts, &task_state)?;
+        let (body, content_type) = render_doc(&doc, &format, envelope, table_markdown)?;
+        Ok::<_, anyhow::Error>((body, content_type, cached))
     })
     .await;
     let elapsed_ms = started.elapsed().as_millis().to_string();
     std::fs::remove_file(&tmp).ok();
 
     match rendered {
-        Ok(Ok((body, content_type))) => (
-            // Timing rides in a header so the body stays byte-identical to
-            // the CLI's output (minimal observability, plan N2c).
-            [
-                (header::CONTENT_TYPE, content_type.to_string()),
-                (header::HeaderName::from_static("x-docparse-ms"), elapsed_ms),
-            ],
-            body,
-        )
-            .into_response(),
+        Ok(Ok((body, content_type, cached))) => {
+            // Timing and cache status ride in headers so the body stays
+            // byte-identical to the CLI's output (observability, plan N2c).
+            let mut headers = header::HeaderMap::new();
+            headers.insert(header::CONTENT_TYPE, content_type.parse().unwrap());
+            headers.insert(
+                header::HeaderName::from_static("x-docparse-ms"),
+                elapsed_ms.parse().unwrap(),
+            );
+            if let Some((name, value)) = cache_header(state.cache_dir.is_some(), cached) {
+                headers.insert(
+                    header::HeaderName::from_static(name),
+                    value.parse().unwrap(),
+                );
+            }
+            (headers, body).into_response()
+        }
         Ok(Err(e)) => err(StatusCode::UNPROCESSABLE_ENTITY, &format!("{e:#}")),
         Err(e) => err(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -314,6 +335,23 @@ fn err(status: StatusCode, msg: &str) -> Response {
     (status, msg.to_string()).into_response()
 }
 
+/// The cache observability header: `hit` / `miss` when `--cache-dir` is set,
+/// absent otherwise. Rides in a header so the body stays byte-identical to the
+/// CLI's output.
+fn cache_header(enabled: bool, cached: Option<bool>) -> Option<(&'static str, String)> {
+    if !enabled {
+        return None;
+    }
+    Some((
+        "x-docparse-cache",
+        if cached.unwrap_or(false) {
+            "hit".to_string()
+        } else {
+            "miss".to_string()
+        },
+    ))
+}
+
 /// Parse + render one document. For the same input/format the body is
 /// byte-identical to `docparse <name> -f <format>` (CLI lockstep) — the one
 /// REST-only superset is `chunks` + `envelope=true`, which wraps the same
@@ -321,6 +359,10 @@ fn err(status: StatusCode, msg: &str) -> Response {
 /// `source_name` replaces the staging temp path in the document's source
 /// annotation — clients sent the file, they should see its name, not our temp
 /// dir (which would also leak server paths and make responses nondeterministic).
+/// With `--cache-dir` set, repeated uploads of the same content + flags replay
+/// the stored document instead of re-parsing (see
+/// [`crate::parse_enhanced_cached`]).
+#[cfg(test)]
 fn render(
     path: &Path,
     source_name: &str,
@@ -330,16 +372,27 @@ fn render(
     table_markdown: bool,
     state: &crate::EnhanceState,
 ) -> anyhow::Result<(String, &'static str)> {
-    let doc = crate::parse_path_with(path, opts.images_embedded, None)?;
-    let mut doc = state.apply(doc, path, opts)?;
-    doc.source = source_name.to_string();
+    let (doc, _cached) = crate::parse_enhanced_cached(path, Some(source_name), opts, state)?;
+    render_doc(&doc, format, envelope, table_markdown)
+}
+
+/// Render an already parsed+enhanced document. The body is byte-identical to
+/// the CLI's `-f <format>` output for the same document (CLI lockstep); the
+/// one REST-only superset is `chunks` + `envelope=true` (additive, opt-in).
+/// `okf` is intercepted by the handler (binary tar) before reaching here.
+fn render_doc(
+    doc: &docparse_core::ir::Document,
+    format: &str,
+    envelope: bool,
+    table_markdown: bool,
+) -> anyhow::Result<(String, &'static str)> {
     Ok(match format {
-        "json" => (output::to_json(&doc)?, "application/json"),
-        "markdown" => (output::to_markdown(&doc), "text/markdown; charset=utf-8"),
-        "text" => (output::to_text(&doc), "text/plain; charset=utf-8"),
+        "json" => (output::to_json(doc)?, "application/json"),
+        "markdown" => (output::to_markdown(doc), "text/markdown; charset=utf-8"),
+        "text" => (output::to_text(doc), "text/plain; charset=utf-8"),
         "chunks" => {
             let chunks = docparse_core::chunk::chunk_document_with(
-                &doc,
+                doc,
                 docparse_core::chunk::ChunkOptions {
                     table_markdown,
                     ..Default::default()
@@ -351,8 +404,8 @@ fn render(
                 // enhancement (OCR/layout) off quality.flags without a 2nd call.
                 serde_json::to_string_pretty(&serde_json::json!({
                     "provenance": serde_json::to_value(&doc.provenance)?,
-                    "quality": serde_json::to_value(docparse_core::quality::analyze(&doc))?,
-                    "profile": serde_json::to_value(docparse_core::quality::profile(&doc))?,
+                    "quality": serde_json::to_value(docparse_core::quality::analyze(doc))?,
+                    "profile": serde_json::to_value(docparse_core::quality::profile(doc))?,
                     "chunks": serde_json::to_value(&chunks)?,
                 }))?
             } else {
@@ -360,33 +413,32 @@ fn render(
             };
             (body, "application/json")
         }
-        "outline" => {
+        "outline" => (
             // Structure tree (table of contents). Section ids match chunks'
             // section_id, so a client can outline → then fetch a section's chunks.
-            (
-                docparse_core::outline::to_json(&docparse_core::outline::build(&doc)),
-                "application/json",
-            )
-        }
+            docparse_core::outline::to_json(&docparse_core::outline::build(doc)),
+            "application/json",
+        ),
         // `okf` is intercepted by the handler (binary tar) before reaching here.
         other => anyhow::bail!("unknown format: {other} (json|markdown|text|chunks|outline|okf)"),
     })
 }
 
 /// Parse + build a deterministic OKF tar archive (REST `format=okf`). Separate
-/// from `render` because the body is binary (`Vec<u8>`), not text.
+/// from `render` because the body is binary (`Vec<u8>`), not text. Caches the
+/// enhanced document like the text faces — the tar itself is rebuilt per
+/// request (its source name/mtime come from the staging file), so only the
+/// heavy parse is skipped on a hit.
 fn render_okf_tar(
     path: &Path,
     source_name: &str,
     opts: crate::EnhanceOpts,
     resource_base: String,
     state: &crate::EnhanceState,
-) -> anyhow::Result<Vec<u8>> {
-    let doc = crate::parse_path_with(path, opts.images_embedded, None)?;
-    let mut doc = state.apply(doc, path, opts)?;
-    doc.source = source_name.to_string();
+) -> anyhow::Result<(Vec<u8>, Option<bool>)> {
+    let (doc, cached) = crate::parse_enhanced_cached(path, Some(source_name), opts, state)?;
     let okf_opts = crate::okf_options_for(path, resource_base, false);
-    Ok(docparse_core::okf::build(&doc, &okf_opts).to_tar())
+    Ok((docparse_core::okf::build(&doc, &okf_opts).to_tar(), cached))
 }
 
 /// Keep only a safe file name (extension included — it selects the backend).
@@ -554,5 +606,83 @@ mod tests {
         assert!(
             paths["/parse"]["post"]["responses"]["200"]["content"]["application/x-tar"].is_object()
         );
+    }
+
+    #[test]
+    fn cache_replays_document_byte_identically_and_misses_on_change() {
+        let dir = std::env::temp_dir().join(format!("docparse-rest-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let st = crate::EnhanceState::new(
+            "models/ppocr".into(),
+            "models/layout/doclayout_yolo.onnx".into(),
+            None,
+            None,
+        )
+        .with_cache_dir(Some(dir.clone()));
+
+        let path = temp_html("docparse-rest-cache.html");
+        // First render stores one entry; the second is a byte-identical hit.
+        let (a, ct) = render(
+            &path,
+            "up.html",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+        )
+        .unwrap();
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "first render must store exactly one entry"
+        );
+        let (b, _) = render(
+            &path,
+            "up.html",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+        )
+        .unwrap();
+        assert_eq!(a, b, "cache hit must replay byte-identical output");
+        assert_eq!(ct, "text/markdown; charset=utf-8");
+        assert!(a.contains("up.html"), "source name survives the cache");
+
+        // A content change misses and re-renders.
+        std::fs::write(
+            &path,
+            "<html><body><h1>Changed</h1><p>New body.</p></body></html>",
+        )
+        .unwrap();
+        let (c, _) = render(
+            &path,
+            "up.html",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+        )
+        .unwrap();
+        assert_ne!(a, c, "content change must miss");
+
+        // The same bytes under a different upload name is a different key —
+        // the source name appears in the output.
+        let (d, _) = render(
+            &path,
+            "other.html",
+            "markdown",
+            Default::default(),
+            false,
+            false,
+            &st,
+        )
+        .unwrap();
+        assert_ne!(c, d, "source_name is part of the key");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

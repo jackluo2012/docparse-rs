@@ -50,6 +50,8 @@
 
 **Phase 19（增量解析缓存,2026-09-06,已实施）**：`--cache-dir <DIR>` 让 RAG 语料批量重跑跳过未变更文件——按 (绝对路径, 内容 SHA-256, 输出签名) 键控，命中直接回放已渲染输出，OCR/版面/UniRec 等重活全跳过；改内容或换输出参数即自然失效。原子写入（tmp+rename），写失败降级为下次重解析、不失败批次；报告标记 cached（表格状态列 / JSON `cached` 字段 / CSV 列）。3 单测（内容哈希稳定性 + 签名对输出参数敏感且对 stderr 参数不敏感 + store/lookup 回环）+ e2e（缓存回放与无缓存批量逐字节一致 / 命中-失效矩阵 / 表列 cached）。见 [devlogs/2026-09-06-incremental-cache.md](devlogs/2026-09-06-incremental-cache.md)。**未做**：OKF 目录包缓存；缓存修剪（旧键随内容/参数演变滞留磁盘）。
 
+**Phase 20（服务端增量缓存,2026-09-06,已实施）**：`serve`/`mcp` 接入 `--cache-dir`——缓存单元是**增强后 Document**（所有格式/工具共享的重活），键 = (source_name 或路径, 内容 SHA-256, 增强参数 + 模型集签名)；渲染参数不进键（查后渲染，不碎片化缓存）。`parse_enhanced_cached` 统一两接口管线；REST 命中回放逐字节一致并加 `x-docparse-cache: hit|miss` 响应头（body 不变约定沿用 `x-docparse-ms` 先例）；MCP 纯加速不标注（JSON-RPC 无头通道）。`format=okf` 走同一文档缓存（tar 本身仍逐请求重建）。3 单测（cache identity 变体 + REST 命中/内容变更 miss/source_name 进键 + MCP 跨工具共享单条目）+ e2e（真实二进制：MCP 双跑字节一致且 get_chunks+outline 共享 1 条目 / REST miss→hit + 头部）+ workspace 全绿 + clippy 零新增。见 [devlogs/2026-09-06-server-document-cache.md](devlogs/2026-09-06-server-document-cache.md)。**未做**：缓存修剪（旧键滞留磁盘，与 CLI 同）。
+
 ## 2. 记分牌（两套互补）
 
 ① **OmniDocBench**（人工真值，模型路径，第一参考）——文本/公式（UniRec）各 ~0.87（论文子集近论文级）、表结构 TEDS_X 0.810（median 0.895，80 表）、套官方公式 Overall ≈75（对标 OpenDoc-0.1B 90.67 / Docling ~80–85 / Marker 78.44）；**短板=学术难表**（端到端 0.52，模型天花板）+ 轻量 `--ocr` mobile（0.42–0.44，用 `--transcribe-model` 提质）。

@@ -7,6 +7,15 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `serve`/`mcp --cache-dir <DIR>` — server-side document cache: repeated
+  uploads (REST) or agent calls (MCP) of the same content + enhancement flags
+  replay the stored **enhanced document** instead of re-parsing (the shared
+  heavy step behind every format/tool). Key = (source name or path, content
+  SHA-256, enhancement + model-set signature); format/tool arguments don't
+  fragment the cache because rendering happens after the lookup. REST reports
+  `x-docparse-cache: hit|miss` (the body stays byte-identical); MCP is pure
+  acceleration. `format=okf` rides the same document cache (the tar itself is
+  still rebuilt per request).
 - `--cache-dir <DIR>` — incremental batch cache: a re-run of the same corpus
   folder skips files whose content (SHA-256) and output options match a
   previous run, replaying the stored output — the heavy work (OCR / layout /

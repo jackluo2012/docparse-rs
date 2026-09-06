@@ -258,11 +258,12 @@ struct Cli {
     #[arg(long, value_name = "DIR")]
     out_dir: Option<PathBuf>,
 
-    /// Batch cache directory: on a re-run, skip files whose content and
-    /// output options match a previous run and replay the stored output —
-    /// the heavy work (OCR / layout / UniRec) is skipped entirely. Keyed by
-    /// content SHA-256 + output signature; a content or flag change simply
-    /// misses and re-parses. Requires --out-dir. Not applied to -f okf.
+    /// Cache directory: on a re-run, skip documents whose content and output
+    /// options match a previous run and replay the stored result — the heavy
+    /// work (OCR / layout / UniRec) is skipped entirely. Keyed by content
+    /// SHA-256 + output signature; a content or flag change simply misses and
+    /// re-parses. Batch requires --out-dir and does not apply to -f okf; with
+    /// serve/mcp it caches the enhanced document behind every tool/format.
     #[arg(long, value_name = "DIR")]
     cache_dir: Option<PathBuf>,
 
@@ -314,6 +315,11 @@ enum Command {
         /// Bearer token for the VLM service.
         #[arg(long)]
         vlm_api_key: Option<String>,
+        /// Document cache dir: repeated parses of the same file (same content
+        /// and enhancement flags) replay the stored document instead of
+        /// re-parsing — pure acceleration, tool outputs stay byte-identical.
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<PathBuf>,
     },
     /// Serve a REST API: POST /parse (multipart) + GET /healthz.
     Serve {
@@ -344,6 +350,12 @@ enum Command {
         /// Bearer token for the VLM service.
         #[arg(long)]
         vlm_api_key: Option<String>,
+        /// Document cache dir: repeated uploads of the same content (same
+        /// enhancement query flags) replay the stored document instead of
+        /// re-parsing — responses stay byte-identical; hits add the
+        /// `x-docparse-cache: hit` response header.
+        #[arg(long, value_name = "DIR")]
+        cache_dir: Option<PathBuf>,
     },
     /// Install the optional neural model tiers (OCR / layout / UniRec) in pure
     /// Rust — no HuggingFace CLI, no Python, no shell scripts. Downloads from
@@ -618,6 +630,10 @@ pub(crate) struct EnhanceState {
     layout_model: PathBuf,
     unirec_dir: Option<PathBuf>,
     vlm: Option<docparse_vlm::VlmConfig>,
+    /// Optional document cache dir (`serve`/`mcp --cache-dir`): when set,
+    /// repeated parses of the same content + flags replay the stored document
+    /// instead of re-running parsing / OCR / layout.
+    pub(crate) cache_dir: Option<PathBuf>,
     unirec: std::sync::OnceLock<Result<std::sync::Arc<docparse_ocr::unirec::UniRec>, String>>,
     layout: std::sync::OnceLock<Result<std::sync::Arc<docparse_ocr::layout::LayoutModel>, String>>,
 }
@@ -634,9 +650,58 @@ impl EnhanceState {
             layout_model,
             unirec_dir,
             vlm,
+            cache_dir: None,
             unirec: std::sync::OnceLock::new(),
             layout: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Attach the `--cache-dir` the serving face was started with (`None` = no
+    /// caching). Consumes `self` so callers keep a single expression.
+    pub(crate) fn with_cache_dir(mut self, dir: Option<PathBuf>) -> Self {
+        self.cache_dir = dir;
+        self
+    }
+
+    /// Output-affecting signature for the document cache. Every `EnhanceOpts`
+    /// field changes what the enhanced document contains, and the configured
+    /// model paths are included too — a `--cache-dir` can outlive the process,
+    /// and a different model set must never replay another server's entries.
+    /// Render-level options (format / envelope / table_markdown / tool
+    /// arguments) are deliberately excluded: they change the rendering, not
+    /// the document, and the faces render after the lookup. The `srv1;` prefix
+    /// keeps serving entries distinct from batch entries sharing an identity.
+    /// **Any new output-affecting serving option MUST be added here**, or a
+    /// changed option would replay stale bytes.
+    pub(crate) fn cache_signature(&self, opts: &EnhanceOpts) -> String {
+        use std::fmt::Write as _;
+        let mut s = String::new();
+        let _ = write!(s, "srv1;");
+        let _ = write!(s, "ocr={};ocr_models={}", opts.ocr, self.ocr.dir.display());
+        let _ = write!(s, ";images={}", opts.images_embedded);
+        let _ = write!(
+            s,
+            ";layout={};layout_model={}",
+            opts.layout,
+            self.layout_model.display()
+        );
+        let _ = write!(
+            s,
+            ";table_model={};formula_model={}",
+            opts.table_model, opts.formula_model
+        );
+        if let Some(d) = &self.unirec_dir {
+            let _ = write!(s, ";unirec={}", d.display());
+        }
+        let _ = write!(
+            s,
+            ";vlm_describe={};vlm_tables={}",
+            opts.vlm_describe, opts.vlm_tables
+        );
+        if let Some(v) = &self.vlm {
+            let _ = write!(s, ";vlm_url={:?};vlm_model={:?}", v.url, v.model);
+        }
+        s
     }
 
     fn unirec(&self) -> anyhow::Result<std::sync::Arc<docparse_ocr::unirec::UniRec>> {
@@ -728,6 +793,57 @@ impl EnhanceState {
         drop_empty_table_placeholders(&mut doc);
         Ok(doc)
     }
+}
+
+/// Parse + enhance one document for the serving faces, replaying the cached
+/// document when `--cache-dir` is set and the (identity, content, flags, model
+/// set) triple matches.
+///
+/// Returns `(document, cache_status)` where `cache_status` is `None` when
+/// caching is disabled, `Some(true)` on a hit, `Some(false)` on a miss that
+/// stored. `source_name` replaces the document's source annotation (REST: the
+/// sanitized upload name — it appears in the output, so it is part of the key
+/// identity); `None` keeps the parser's default (MCP: the path).
+///
+/// The cached unit is the enhanced document — the shared heavy step behind
+/// every format and tool. Rendering happens after the lookup, so format/tool
+/// arguments never fragment the cache. Store failures are best-effort: they
+/// degrade to a re-parse, never an error.
+pub(crate) fn parse_enhanced_cached(
+    path: &std::path::Path,
+    source_name: Option<&str>,
+    opts: EnhanceOpts,
+    state: &EnhanceState,
+) -> anyhow::Result<(docparse_core::ir::Document, Option<bool>)> {
+    // `EnhanceOpts` is Copy: the same opts can be handed to every branch.
+    let parse_fresh = |opts: EnhanceOpts| -> anyhow::Result<docparse_core::ir::Document> {
+        let mut doc = parse_path_with(path, opts.images_embedded, None)?;
+        doc = state.apply(doc, path, opts)?;
+        if let Some(name) = source_name {
+            doc.source = name.to_string();
+        }
+        Ok(doc)
+    };
+    let Some(cache_dir) = &state.cache_dir else {
+        return Ok((parse_fresh(opts)?, None));
+    };
+    let sha = crate::cache::content_sha(path)?;
+    let sig = state.cache_signature(&opts);
+    let identity = source_name
+        .map(str::to_string)
+        .unwrap_or_else(|| path.display().to_string());
+    if let Some(entry) = crate::cache::lookup_identity(cache_dir, &identity, &sha, &sig) {
+        // Corruption / version skew is a miss, not an error: re-parse and
+        // overwrite, same as the batch face.
+        if let Ok(doc) = serde_json::from_str::<docparse_core::ir::Document>(&entry.output) {
+            return Ok((doc, Some(true)));
+        }
+    }
+    let doc = parse_fresh(opts)?;
+    let json = serde_json::to_string(&doc)?;
+    let entry = crate::cache::CacheEntry::new(sha.clone(), doc.pages.len(), json);
+    let _ = crate::cache::store_identity(cache_dir, &identity, &sha, &sig, &entry);
+    Ok((doc, Some(false)))
 }
 
 /// Write each decoded image to `dir` (JPEG passthrough as-is; raw Gray8/Rgb8
@@ -880,13 +996,17 @@ fn main() -> anyhow::Result<()> {
                 vlm_url,
                 vlm_model,
                 vlm_api_key,
+                cache_dir,
             } => {
-                return mcp::serve(EnhanceState::new(
-                    ocr_models.clone(),
-                    layout_model.clone(),
-                    unirec_models.clone(),
-                    vlm_config(vlm_url.clone(), vlm_model.clone(), vlm_api_key.clone()),
-                ))
+                return mcp::serve(
+                    EnhanceState::new(
+                        ocr_models.clone(),
+                        layout_model.clone(),
+                        unirec_models.clone(),
+                        vlm_config(vlm_url.clone(), vlm_model.clone(), vlm_api_key.clone()),
+                    )
+                    .with_cache_dir(cache_dir.clone()),
+                )
             }
             Command::Serve {
                 host,
@@ -897,6 +1017,7 @@ fn main() -> anyhow::Result<()> {
                 vlm_url,
                 vlm_model,
                 vlm_api_key,
+                cache_dir,
             } => {
                 return server::serve(
                     host,
@@ -906,7 +1027,8 @@ fn main() -> anyhow::Result<()> {
                         layout_model.clone(),
                         unirec_models.clone(),
                         vlm_config(vlm_url.clone(), vlm_model.clone(), vlm_api_key.clone()),
-                    ),
+                    )
+                    .with_cache_dir(cache_dir.clone()),
                 )
             }
             Command::FetchModels { tier, dir } => return fetch_models::run(*tier, dir),

@@ -1,19 +1,27 @@
-//! Incremental parse cache for batch runs (`--cache-dir <DIR>`).
+//! Incremental parse cache (`--cache-dir <DIR>`), shared by the batch CLI and
+//! the serving faces (REST `/parse`, MCP tools).
 //!
-//! The RAG-corpus workflow re-runs the same folder repeatedly; files rarely
+//! The RAG-corpus workflow re-runs the same documents repeatedly; files rarely
 //! change between runs, yet every run re-pays the heavy cost (OCR / layout /
-//! UniRec inference, page rasterization). The cache keys a rendered output by
-//! `(absolute path, content SHA-256, output signature)` and, on a hit, replays
-//! the stored bytes — parsing is skipped entirely.
+//! UniRec inference, page rasterization). The cache keys a stored payload by
+//! `(identity, content SHA-256, output signature)` and, on a hit, replays it —
+//! parsing is skipped entirely.
+//!
+//! The payload differs by face: the batch CLI stores the **rendered output**
+//! (the whole per-file result); the serving faces store the **enhanced
+//! document** (the shared heavy step behind every format and tool — rendering
+//! happens after the lookup, so format/tool arguments never fragment the
+//! cache). Both reuse [`CacheEntry`]; the signatures differ, so keys never
+//! collide across faces.
 //!
 //! Correctness contract: **the key is the whole story.** A content change or
 //! an output-affecting flag change mints a fresh cache file name, so a hit can
 //! only ever replay bytes that are provably right for the current
-//! path+content+options triple. Stale entries linger on disk but are never
+//! identity+content+options triple. Stale entries linger on disk but are never
 //! consulted again; no index, no invalidation pass.
 //!
 //! Cache writes are best-effort: a failed store degrades to a re-parse next
-//! run and never fails the batch.
+//! run and never fails the batch or the request.
 
 use anyhow::Context as _;
 use sha2::{Digest, Sha256};
@@ -22,17 +30,19 @@ use std::path::{Path, PathBuf};
 
 use crate::Cli;
 
-/// One cache entry: the rendered output plus the metadata the batch report
-/// needs without re-parsing.
+/// One cache entry: the stored payload plus the metadata the caller needs
+/// without re-parsing.
 #[derive(serde::Serialize, serde::Deserialize)]
 pub struct CacheEntry {
     /// Entry format version (bump to invalidate every entry).
     pub v: u32,
     /// Content SHA-256 this entry was built from — checked on read.
     pub sha256: String,
-    /// Page count (the report shows it; re-parsing just for that is silly).
+    /// Page count (the batch report shows it; re-parsing just for that is
+    /// silly).
     pub pages: usize,
-    /// The rendered output (UTF-8: JSON / Markdown / text).
+    /// The stored payload (UTF-8): the rendered output for batch, the
+    /// enhanced document JSON for the serving faces.
     pub output: String,
 }
 
@@ -109,11 +119,14 @@ pub fn output_signature(cli: &Cli) -> String {
     s
 }
 
-/// Cache file name for a triple: SHA-256 of `path|sha|sig`. Any change mints
-/// a fresh name.
-fn cache_file(cache_dir: &Path, path: &Path, sha: &str, sig: &str) -> PathBuf {
+/// Cache file name for a key triple: SHA-256 of `identity|sha|sig`. Any
+/// change mints a fresh name. The identity is the caller's notion of "which
+/// document this is": the absolute path for the CLI/MCP faces (stable,
+/// user-supplied), or the sanitized upload name for REST (the staging temp
+/// path is random per request and would poison the key).
+fn cache_file(cache_dir: &Path, identity: &str, sha: &str, sig: &str) -> PathBuf {
     let mut hasher = Sha256::new();
-    hasher.update(path.display().to_string().as_bytes());
+    hasher.update(identity.as_bytes());
     hasher.update(b"\n");
     hasher.update(sha.as_bytes());
     hasher.update(b"\n");
@@ -126,7 +139,20 @@ fn cache_file(cache_dir: &Path, path: &Path, sha: &str, sig: &str) -> PathBuf {
 /// encodes it). Any mismatch (missing file, truncated JSON, wrong version,
 /// wrong hash) is a miss: `None`.
 pub fn lookup(cache_dir: &Path, path: &Path, sha: &str, sig: &str) -> Option<CacheEntry> {
-    let file = cache_file(cache_dir, path, sha, sig);
+    lookup_identity(cache_dir, &path.display().to_string(), sha, sig)
+}
+
+/// Path-free variant for the serving faces: `identity` is whatever stays
+/// stable across requests for the same logical document (the sanitized upload
+/// name for REST — it appears in the output — or the caller-provided path for
+/// MCP).
+pub fn lookup_identity(
+    cache_dir: &Path,
+    identity: &str,
+    sha: &str,
+    sig: &str,
+) -> Option<CacheEntry> {
+    let file = cache_file(cache_dir, identity, sha, sig);
     let bytes = std::fs::read(&file).ok()?;
     let entry: CacheEntry = serde_json::from_slice(&bytes).ok()?;
     if entry.v != VERSION || entry.sha256 != sha {
@@ -135,9 +161,10 @@ pub fn lookup(cache_dir: &Path, path: &Path, sha: &str, sig: &str) -> Option<Cac
     Some(entry)
 }
 
-/// Write a cache entry atomically (temp + rename). Concurrent writers (--jobs)
-/// race only on the rename, which is atomic: one wins, the other's bytes are
-/// dropped whole — never a torn file. Best-effort at the call site.
+/// Write a cache entry atomically (temp + rename). Concurrent writers (--jobs,
+/// or parallel serving requests) race only on the rename, which is atomic: one
+/// wins, the other's bytes are dropped whole — never a torn file. Best-effort
+/// at the call site.
 pub fn store(
     cache_dir: &Path,
     path: &Path,
@@ -145,9 +172,21 @@ pub fn store(
     sig: &str,
     entry: &CacheEntry,
 ) -> anyhow::Result<()> {
+    store_identity(cache_dir, &path.display().to_string(), sha, sig, entry)
+}
+
+/// Path-free variant of [`store`]; see [`lookup_identity`] for the identity
+/// contract.
+pub fn store_identity(
+    cache_dir: &Path,
+    identity: &str,
+    sha: &str,
+    sig: &str,
+    entry: &CacheEntry,
+) -> anyhow::Result<()> {
     std::fs::create_dir_all(cache_dir)
         .with_context(|| format!("create {}", cache_dir.display()))?;
-    let target = cache_file(cache_dir, path, sha, sig);
+    let target = cache_file(cache_dir, identity, sha, sig);
     let tmp = cache_dir.join(format!(
         ".{}.partial",
         target.file_name().unwrap_or_default().to_string_lossy()
@@ -265,6 +304,35 @@ mod tests {
         assert!(lookup(&d, p, &sha, "format=Markdown").is_none());
         // Missing cache dir -> miss, never an error.
         assert!(lookup(&d.join("nope"), p, &sha, sig).is_none());
+
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn identity_variants_share_one_mechanism() {
+        let d = scratch("idv");
+        let identity = "report.pdf";
+        let sha = "c".repeat(64);
+        let sig = "srv1;ocr=false";
+        let entry = CacheEntry::new(sha.clone(), 3, "{\"pages\":3}".to_string());
+        store_identity(&d, identity, &sha, sig, &entry).unwrap();
+
+        // Same identity + sha + sig hits.
+        assert_eq!(
+            lookup_identity(&d, identity, &sha, sig).expect("hit").pages,
+            3
+        );
+        // A different identity (e.g. another upload name for the same bytes)
+        // misses — the serving faces key on it because it appears in output.
+        assert!(lookup_identity(&d, "other.pdf", &sha, sig).is_none());
+        // The path-based wrapper agrees with its identity expansion.
+        let p = Path::new("/tmp/some/report.pdf");
+        store(&d, p, &sha, sig, &entry).unwrap();
+        assert!(lookup(&d, p, &sha, sig).is_some());
+        assert!(
+            lookup(&d, Path::new("/tmp/some/other.pdf"), &sha, sig).is_none(),
+            "path wrapper keys on the absolute path"
+        );
 
         let _ = std::fs::remove_dir_all(&d);
     }

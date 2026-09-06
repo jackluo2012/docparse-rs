@@ -449,13 +449,17 @@ fn get_prompt(params: &Value) -> Result<Value, (i64, String)> {
 /// Parse, then apply whatever enhancements the tool asked for (boolean
 /// arguments; everything defaults off = the deterministic result). PDF-only
 /// enhancements are no-ops on other formats.
+///
+/// With `--cache-dir` set, the enhanced document is cached per (path, content,
+/// flags) — every tool shares the one entry, since the cached unit is the
+/// document and tool-specific arguments only affect the rendering after it. A
+/// hit is pure acceleration: the JSON-RPC output stays byte-identical.
 fn parse_enhanced(
     args: &Value,
     state: &crate::EnhanceState,
 ) -> anyhow::Result<docparse_core::ir::Document> {
     let path = std::path::Path::new(str_arg(args, "path")?);
     let images_embedded = args.get("images").and_then(Value::as_str) == Some("embedded");
-    let doc = crate::parse_path_with(path, images_embedded, None)?;
     let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     let opts = crate::EnhanceOpts {
         ocr: flag("ocr"),
@@ -466,7 +470,7 @@ fn parse_enhanced(
         vlm_describe: flag("vlm_describe"),
         vlm_tables: flag("vlm_tables"),
     };
-    state.apply(doc, path, opts)
+    crate::parse_enhanced_cached(path, None, opts, state).map(|(doc, _)| doc)
 }
 
 fn tool_parse_document(args: &Value, state: &crate::EnhanceState) -> anyhow::Result<String> {
@@ -864,5 +868,53 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unknown["error"]["code"], -32602);
+    }
+
+    #[test]
+    fn document_cache_shares_one_entry_across_tools() {
+        let dir = std::env::temp_dir().join(format!("docparse-mcp-cache-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let st = crate::EnhanceState::new(
+            "models/ppocr".into(),
+            "models/layout/doclayout_yolo.onnx".into(),
+            None,
+            None,
+        )
+        .with_cache_dir(Some(dir.clone()));
+        let path = temp_html("docparse-mcp-cache.html");
+
+        // Repeated tool calls on the same file are byte-identical (the second
+        // is a cache hit — pure acceleration, no output annotation).
+        let call = req(
+            "tools/call",
+            json!({ "name": "get_chunks", "arguments": { "path": path } }),
+        );
+        let r1 = handle_line(&call, &st).expect("response");
+        let r2 = handle_line(&call, &st).expect("response");
+        assert_eq!(r1, r2, "cache hit must replay byte-identical results");
+        let v2: serde_json::Value = serde_json::from_str(&r2).unwrap();
+        assert_eq!(v2["result"]["isError"], false);
+
+        // A different tool shares the same cached document — one entry covers
+        // all five tools.
+        let outline = req(
+            "tools/call",
+            json!({ "name": "outline", "arguments": { "path": path } }),
+        );
+        let ro = handle_line(&outline, &st).expect("response");
+        let vo: serde_json::Value = serde_json::from_str(&ro).unwrap();
+        let otree: serde_json::Value =
+            serde_json::from_str(vo["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(
+            otree["children"][0]["title"], "Title",
+            "outline renders from the cached doc"
+        );
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            1,
+            "all tools must share one cache entry"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

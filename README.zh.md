@@ -160,6 +160,8 @@ docparse fetch-models unirec     # --table/formula/transcribe-model (~700 MB)
 docparse fetch-models ppv2       # --layout-model ppv2 (~210 MB + 一步本地预处理)
 docparse fetch-models all
 docparse corpus/ --out-dir out/ -f chunks --cache-dir .cache   # 增量批量：重跑跳过未变更文件（内容哈希键控）
+docparse serve --port 8080 --cache-dir .cache   # REST：同内容+同增强参数命中回放文档（响应头 x-docparse-cache: hit）
+docparse mcp --cache-dir .cache                 # MCP：agent 重复调用跳过重解析（输出逐字节一致）
 ```
 
 需 HuggingFace CLI（`pip install -U huggingface_hub`）；`ppv2` 另需 `onnx`+`onnxsim` 把图静态化给 `tract`（脚本会打印该命令）。
