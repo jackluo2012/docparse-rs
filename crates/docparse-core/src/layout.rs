@@ -9,9 +9,9 @@
 //! spacing. Output formats consume blocks instead of raw chunks so Markdown is
 //! readable paragraphs, not one block per line.
 
-use crate::ir::{BBox, Document, Page, TextChunk};
+use crate::ir::{BBox, Document, Element, ImageChunk, Page, Table, TextChunk};
 use crate::reading_order::reading_order;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// Inter-chunk gap (in em) above which a word space is inserted. A space
 /// advances ~0.25 em (veraPDF `WHITE_SPACE_FACTOR`), and veraPDF splits words at
@@ -174,6 +174,7 @@ pub struct Line {
 
 /// A body block: a paragraph or a heading, after grouping lines. Carries page +
 /// union bbox so downstream (chunking/citation) can point back to the source.
+#[derive(Clone)]
 pub struct Block {
     pub text: String,
     pub size: f32,
@@ -801,6 +802,187 @@ pub fn page_blocks(doc: &Document) -> Vec<Vec<Block>> {
     pages_blocks
 }
 
+/// A page-level content item in reading order: a text block, a table, or an
+/// image. Tables/images are spliced into the block flow by column-aware
+/// position, so the same order feeds Markdown/text output and RAG chunking
+/// (they agree on where a float sits instead of dumping floats after all text).
+pub enum PageItem<'a> {
+    Block(Block),
+    Table(&'a Table),
+    Image(&'a ImageChunk),
+}
+
+impl PageItem<'_> {
+    pub fn bbox(&self) -> BBox {
+        match self {
+            PageItem::Block(b) => b.bbox,
+            PageItem::Table(t) => t.bbox,
+            PageItem::Image(i) => i.bbox,
+        }
+    }
+}
+
+/// "Follows `target` in its column": horizontal overlap + top edge below
+/// `target`'s top. Used to splice floats (tables/images) into block reading
+/// order without a right-column float jumping ahead of an unrelated left one
+/// on `y` alone.
+fn follows(bb: &BBox, target: &BBox) -> bool {
+    bb.x0 < target.x1 && target.x0 < bb.x1 && bb.y1 < target.y1
+}
+
+/// Whether a line reads as a figure caption ("Figure 3", "Fig. 2", "图3",
+/// "Abbildung 1"). Figure-only by design — table/"表" captions belong to table
+/// chunks, not images.
+pub(crate) fn is_caption_line(text: &str) -> bool {
+    let t = text.trim_start();
+    let lower = t.to_ascii_lowercase();
+    const PREFIXES: [&str; 4] = ["figure", "fig.", "fig ", "abbildung"];
+    if PREFIXES.iter().any(|p| lower.starts_with(p)) {
+        return true;
+    }
+    // CJK figure caption: 图/圖 directly followed by a digit or space.
+    let mut chars = t.chars();
+    matches!(chars.next(), Some('图' | '圖'))
+        && chars
+            .next()
+            .is_some_and(|c| c.is_ascii_digit() || c.is_whitespace())
+}
+
+/// Horizontal overlap between a block and an image box.
+pub(crate) fn h_overlap(b: &BBox, im: &BBox) -> bool {
+    b.x0 < im.x1 && im.x0 < b.x1
+}
+
+/// Clear vertical gap (PDF points) between an image and a block; 0 if they
+/// overlap vertically. (PDF y grows upward: `y1` is the top edge.)
+pub(crate) fn v_gap(b: &BBox, im: &BBox) -> f32 {
+    if b.y1 <= im.y0 {
+        im.y0 - b.y1 // block sits below the image
+    } else if b.y0 >= im.y1 {
+        b.y0 - im.y1 // block sits above the image
+    } else {
+        0.0 // vertically overlapping
+    }
+}
+
+/// Vertical distance used to bind an in-document caption to its image.
+pub(crate) const IMAGE_ADJ_GAP: f32 = 40.0;
+
+/// Whether a block reads as this image's caption: a layout-model / tagged-PDF
+/// `Caption` block (precise), or a "Figure N" text-pattern block (zero-model
+/// fallback). Headings never count.
+pub(crate) fn block_is_caption(b: &Block) -> bool {
+    !b.heading && (b.caption || is_caption_line(&b.text))
+}
+
+/// Index into `blocks` of the adjacent in-document caption for an image, if any:
+/// the nearest horizontally-overlapping caption block within [`IMAGE_ADJ_GAP`].
+pub(crate) fn find_caption_idx(blocks: &[&Block], im: &ImageChunk) -> Option<usize> {
+    blocks
+        .iter()
+        .enumerate()
+        .filter(|(_, b)| b.page == im.page && block_is_caption(b) && h_overlap(&b.bbox, &im.bbox))
+        .map(|(i, b)| (v_gap(&b.bbox, &im.bbox), i))
+        .filter(|(g, _)| *g <= IMAGE_ADJ_GAP)
+        .min_by(|(g1, _), (g2, _)| g1.partial_cmp(g2).unwrap_or(std::cmp::Ordering::Equal))
+        .map(|(_, i)| i)
+}
+
+/// Minimum page coverage (bbox area / page area) for an image to be RAG
+/// content (icons and rules are filtered out before chunking).
+pub(crate) const MIN_IMAGE_COVERAGE: f32 = 0.01;
+
+/// Per-page content in reading order, with tables/images spliced into the
+/// block flow. `drop_bound_captions` removes blocks that are bound as a
+/// floating image's in-document caption (chunk semantics fold them into the
+/// image chunk; plain output keeps them). Blocks are owned (cloned from the
+/// reconstruction), tables/images borrowed from the document.
+pub fn page_items_with(doc: &Document, drop_bound_captions: bool) -> Vec<Vec<PageItem<'_>>> {
+    let blocks_per_page = page_blocks(doc);
+    let mut out = Vec::with_capacity(doc.pages.len());
+    for (blocks, page) in blocks_per_page.iter().zip(&doc.pages) {
+        let tables: Vec<&Table> = page
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                // Skip empty-row placeholders (unfilled layout table regions).
+                Element::Table(t) if !t.rows.is_empty() => Some(t),
+                _ => None,
+            })
+            .collect();
+        let images: Vec<&ImageChunk> = page
+            .elements
+            .iter()
+            .filter_map(|e| match e {
+                Element::Image(i) => Some(i),
+                _ => None,
+            })
+            .collect();
+
+        // Blocks arrive in reading order from layout (column-aware XY-cut). A
+        // page-wide y-sort here would re-interleave two-column pages (left and
+        // right columns share y ranges), so keep block order and splice each
+        // float in before the first block that follows it within its own
+        // column: horizontal overlap + top edge below the float's. Floats are
+        // processed bottom-up so ones sharing an anchor end up top-to-bottom.
+        let mut consumed: HashSet<usize> = HashSet::new();
+        if drop_bound_captions {
+            let brefs: Vec<&Block> = blocks.iter().collect();
+            for im in &images {
+                if im.caption.is_none()
+                    && im.bbox.width() * im.bbox.height() / page_area(page) >= MIN_IMAGE_COVERAGE
+                {
+                    if let Some(idx) = find_caption_idx(&brefs, im) {
+                        consumed.insert(idx);
+                    }
+                }
+            }
+        }
+        let mut items: Vec<PageItem> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| !consumed.contains(i))
+            .map(|(_, b)| PageItem::Block(b.clone()))
+            .collect();
+
+        let mut floats: Vec<PageItem> = tables
+            .iter()
+            .map(|t| PageItem::Table(t))
+            .chain(images.iter().map(|i| PageItem::Image(i)))
+            .collect();
+        floats.sort_by(|a, b| {
+            a.bbox()
+                .y1
+                .partial_cmp(&b.bbox().y1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for f in floats {
+            let pos = items
+                .iter()
+                .position(|it| follows(&it.bbox(), &f.bbox()))
+                .unwrap_or(items.len());
+            items.insert(pos, f);
+        }
+        out.push(items);
+    }
+    out
+}
+
+fn page_area(page: &Page) -> f32 {
+    (page.width * page.height).max(1.0)
+}
+
+/// Page content in reading order, captions kept (Markdown/text output).
+pub fn page_items(doc: &Document) -> Vec<Vec<PageItem<'_>>> {
+    page_items_with(doc, false)
+}
+
+/// Page content in reading order, in-document image captions folded away
+/// (RAG chunking — the caption is emitted as part of the image chunk).
+pub fn page_items_chunk(doc: &Document) -> Vec<Vec<PageItem<'_>>> {
+    page_items_with(doc, true)
+}
+
 /// Assign heading levels document-wide (G9c): tagged levels are kept; the
 /// remaining headings get tiers by font size — distinct sizes (0.5pt buckets)
 /// sorted descending map to levels 1..=3 (deeper tiers all become 3).
@@ -873,6 +1055,128 @@ pub fn body_font_size(doc: &Document) -> f32 {
     entries.first().map(|&(k, _)| k as f32 / 2.0).unwrap_or(0.0)
 }
 
+#[cfg(test)]
+mod page_items_tests {
+    use super::*;
+    use crate::ir::{Cell, Document, Element, ImageChunk, ImageKind, Page, TextChunk};
+
+    fn text_el(t: &str, x0: f32, y0: f32, x1: f32, y1: f32) -> Element {
+        Element::Text(TextChunk {
+            text: t.into(),
+            bbox: BBox { x0, y0, x1, y1 },
+            font_size: y1 - y0,
+            font: None,
+            page: 1,
+            confidence: 1.0,
+            bold: false,
+            hidden: false,
+            source: None,
+            group: None,
+            tag: None,
+        })
+    }
+    fn table_el(x0: f32, y0: f32, x1: f32, y1: f32) -> Element {
+        Element::Table(Table {
+            bbox: BBox { x0, y0, x1, y1 },
+            page: 1,
+            rows: vec![vec![Cell {
+                text: "c".into(),
+                bbox: BBox { x0, y0, x1, y1 },
+                row_span: 1,
+                col_span: 1,
+                merged: false,
+            }]],
+            source: None,
+        })
+    }
+    fn img_el(x0: f32, y0: f32, x1: f32, y1: f32) -> Element {
+        Element::Image(ImageChunk {
+            bbox: BBox { x0, y0, x1, y1 },
+            page: 1,
+            width_px: 100,
+            height_px: 100,
+            turns: 0,
+            kind: ImageKind::None,
+            data: Vec::new(),
+            file: Some("f.png".into()),
+            data_base64: None,
+            data_media_type: None,
+            caption: None,
+            caption_source: None,
+        })
+    }
+    fn doc(elements: Vec<Element>) -> Document {
+        Document {
+            source: "t".into(),
+            provenance: None,
+            pages: vec![Page {
+                number: 1,
+                width: 612.0,
+                height: 792.0,
+                elements,
+            }],
+        }
+    }
+    fn kinds<'a>(items: &'a [PageItem<'_>]) -> Vec<&'a str> {
+        items
+            .iter()
+            .map(|it| match it {
+                PageItem::Block(b) => b.text.as_str(),
+                PageItem::Table(_) => "[table]",
+                PageItem::Image(_) => "[img]",
+            })
+            .collect()
+    }
+
+    #[test]
+    fn no_floats_keeps_block_order() {
+        let d = doc(vec![
+            text_el("H", 0.0, 700.0, 500.0, 720.0),
+            text_el("A", 0.0, 600.0, 500.0, 620.0),
+            text_el("B", 0.0, 500.0, 500.0, 520.0),
+        ]);
+        let items = page_items(&d);
+        assert_eq!(kinds(&items[0]), vec!["H", "A", "B"]);
+    }
+
+    #[test]
+    fn table_splices_between_paragraphs() {
+        // The table sits vertically between A and B: output order must be
+        // A, table, B — not A, B, table (the pre-Phase-23 behavior).
+        let d = doc(vec![
+            text_el("A", 0.0, 700.0, 300.0, 720.0),
+            table_el(0.0, 500.0, 300.0, 600.0),
+            text_el("B", 0.0, 400.0, 300.0, 420.0),
+        ]);
+        let items = page_items(&d);
+        assert_eq!(kinds(&items[0]), vec!["A", "[table]", "B"]);
+    }
+
+    #[test]
+    fn image_splices_by_position() {
+        let d = doc(vec![
+            text_el("A", 0.0, 700.0, 300.0, 720.0),
+            img_el(0.0, 500.0, 300.0, 620.0),
+            text_el("B", 0.0, 400.0, 300.0, 420.0),
+        ]);
+        let items = page_items(&d);
+        assert_eq!(kinds(&items[0]), vec!["A", "[img]", "B"]);
+    }
+
+    #[test]
+    fn right_column_float_stays_within_its_column() {
+        // A float in the right column (x 250-450) must not jump ahead of the
+        // left column's paragraph: `follows` requires horizontal overlap.
+        let d = doc(vec![
+            text_el("L1", 0.0, 700.0, 200.0, 720.0),
+            text_el("L2", 0.0, 620.0, 200.0, 640.0),
+            table_el(250.0, 300.0, 450.0, 500.0),
+            text_el("R1", 250.0, 650.0, 450.0, 670.0),
+        ]);
+        let items = page_items(&d);
+        assert_eq!(kinds(&items[0]), vec!["L1", "L2", "R1", "[table]"]);
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;

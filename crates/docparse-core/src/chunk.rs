@@ -6,8 +6,8 @@
 //! every chunk points back to exact coordinates ([`Chunk::page`]/[`Chunk::bbox`]),
 //! and [`locate`] maps a coordinate back to its chunk — bidirectional citation.
 
-use crate::ir::{BBox, Cell, Document, Element, ImageChunk, Table};
-use crate::layout::{self, Block};
+use crate::ir::{BBox, Cell, Document, ImageChunk, Table};
+use crate::layout::{self, Block, PageItem};
 use serde::{Deserialize, Serialize};
 
 /// Minimum fraction of the page an image must cover to become its own chunk.
@@ -16,11 +16,6 @@ use serde::{Deserialize, Serialize};
 /// (`MIN_FIGURE_COVERAGE`) so the same images that get described also get
 /// chunked.
 const MIN_IMAGE_COVERAGE: f32 = 0.01;
-
-/// Vertical gap (PDF points) within which an adjacent line/block is considered
-/// to belong to an image — for caption matching and context extraction. About
-/// three body lines; captions sit directly under/over a figure.
-const IMAGE_ADJ_GAP: f32 = 40.0;
 
 /// Max characters of surrounding-text context attached to an image chunk.
 const IMAGE_CONTEXT_CHARS: usize = 300;
@@ -122,32 +117,13 @@ pub fn to_json(chunks: &[Chunk]) -> String {
     serde_json::to_string_pretty(chunks).unwrap_or_default()
 }
 
-/// An item to emit, in reading order: a body block, a table, or an image.
-enum Item<'a> {
-    Block(&'a Block),
-    Table(&'a Table),
-    Image(&'a ImageChunk),
-}
-
-impl Item<'_> {
-    fn bbox(&self) -> BBox {
-        match self {
-            Item::Block(b) => b.bbox,
-            Item::Table(t) => t.bbox,
-            Item::Image(i) => i.bbox,
-        }
-    }
-}
-
-/// "Follows `target` in its column": horizontal overlap + top edge below
-/// `target`'s top. Used to splice floats (tables/images) into block reading
-/// order without a right-column float jumping ahead of an unrelated left one
-/// on `y` alone.
-fn follows(bb: &BBox, target: &BBox) -> bool {
-    bb.x0 < target.x1 && target.x0 < bb.x1 && bb.y1 < target.y1
-}
-
 pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
+    // Per-page reading order (XY-cut blocks + tables/images spliced by column)
+    // is shared with Markdown/text output so chunk order matches the document.
+    // Caption/context lookup needs the *un*-consumed block list (bound captions
+    // are folded into image chunks and dropped from the splice), so the plain
+    // block reconstruction is fetched once for that side-channel.
+    let items_per_page = layout::page_items_chunk(doc);
     let blocks_per_page = layout::page_blocks(doc);
     let mut chunks: Vec<Chunk> = Vec::new();
     let mut next_id = 0usize;
@@ -185,90 +161,17 @@ pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
         }
     };
 
-    for (blocks, page) in blocks_per_page.iter().zip(&doc.pages) {
-        let tables: Vec<&Table> = page
-            .elements
-            .iter()
-            .filter_map(|e| match e {
-                // Skip empty-row placeholders (unfilled layout table regions).
-                Element::Table(t) if !t.rows.is_empty() => Some(t),
-                _ => None,
-            })
-            .collect();
-        // Content images: gated by page coverage so icons/rules don't flood RAG.
+    for ((items, blocks), page) in items_per_page.iter().zip(&blocks_per_page).zip(&doc.pages) {
+        // Coverage gate for images (icons/rules must not flood RAG). Splice
+        // positions come from the shared layout::page_items_chunk, so this
+        // loop only consumes; `blocks` is the full reconstruction for
+        // caption/context lookup (caption rows are not in `items`).
         let page_area = (page.width * page.height).max(1.0);
-        let images: Vec<&ImageChunk> = page
-            .elements
-            .iter()
-            .filter_map(|e| match e {
-                Element::Image(i) => (i.bbox.width() * i.bbox.height() / page_area
-                    >= MIN_IMAGE_COVERAGE)
-                    .then_some(i),
-                _ => None,
-            })
-            .collect();
-
-        // Blocks arrive in reading order from layout (column-aware XY-cut). A
-        // page-wide y-sort here would re-interleave two-column pages (left and
-        // right columns share y ranges), so keep block order and splice each
-        // table in before the first block that follows it within its own
-        // column: horizontal overlap + top edge below the table's. Tables are
-        // processed bottom-up so ones sharing an anchor end up top-to-bottom.
-        // Caption lines bound to a chunked image are folded into that image's
-        // chunk — drop them from the prose flow so they aren't emitted twice.
-        // (Only when the in-document caption is actually used, i.e. the image
-        // has no enhancer/VLM caption.)
-        let mut consumed_captions: std::collections::HashSet<usize> =
-            std::collections::HashSet::new();
-        for im in &images {
-            if im.caption.is_none() {
-                if let Some(idx) = find_caption_idx(blocks, im) {
-                    consumed_captions.insert(idx);
-                }
-            }
-        }
-        let mut items: Vec<Item> = blocks
-            .iter()
-            .enumerate()
-            .filter(|(i, _)| !consumed_captions.contains(i))
-            .map(|(_, b)| Item::Block(b))
-            .collect();
-        // Splice floats (tables, then images) into block reading order. Each is
-        // inserted before the first item that follows it in its column; floats
-        // are processed bottom-up (y1 ascending) so ones sharing an anchor end
-        // up top-to-bottom.
-        let mut tables_by_y = tables.clone();
-        tables_by_y.sort_by(|a, b| {
-            a.bbox
-                .y1
-                .partial_cmp(&b.bbox.y1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for t in tables_by_y {
-            let pos = items
-                .iter()
-                .position(|it| follows(&it.bbox(), &t.bbox))
-                .unwrap_or(items.len());
-            items.insert(pos, Item::Table(t));
-        }
-        let mut images_by_y = images.clone();
-        images_by_y.sort_by(|a, b| {
-            a.bbox
-                .y1
-                .partial_cmp(&b.bbox.y1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        for im in images_by_y {
-            let pos = items
-                .iter()
-                .position(|it| follows(&it.bbox(), &im.bbox))
-                .unwrap_or(items.len());
-            items.insert(pos, Item::Image(im));
-        }
+        let blocks: Vec<&Block> = blocks.iter().collect();
 
         for item in items {
             match item {
-                Item::Block(b) if b.list_item => {
+                PageItem::Block(b) if b.list_item => {
                     // List items stay one chunk each (G9b) — never folded
                     // into prose paragraphs.
                     flush(&mut buf, &mut chunks, &mut next_id);
@@ -285,7 +188,7 @@ pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
                     });
                     next_id += 1;
                 }
-                Item::Block(b) if b.code => {
+                PageItem::Block(b) if b.code => {
                     // Code blocks are self-contained chunks — never merged
                     // into prose paragraphs (G8a).
                     flush(&mut buf, &mut chunks, &mut next_id);
@@ -302,7 +205,7 @@ pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
                     });
                     next_id += 1;
                 }
-                Item::Block(b) if b.heading => {
+                PageItem::Block(b) if b.heading => {
                     flush(&mut buf, &mut chunks, &mut next_id);
                     // Update the section stack by real heading level (mirrors
                     // outline::build): pop same/deeper ancestors, then push this
@@ -329,7 +232,7 @@ pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
                     });
                     next_id += 1;
                 }
-                Item::Block(b) => {
+                PageItem::Block(b) => {
                     match buf.as_mut() {
                         // Continue accumulating within the same page.
                         Some(p) if p.page == b.page && p.char_len < opts.target_chars => {
@@ -342,7 +245,7 @@ pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
                         }
                     }
                 }
-                Item::Table(t) => {
+                PageItem::Table(t) => {
                     flush(&mut buf, &mut chunks, &mut next_id);
                     let text = if opts.table_markdown {
                         table_text_markdown(t)
@@ -362,17 +265,20 @@ pub fn chunk_document_with(doc: &Document, opts: ChunkOptions) -> Vec<Chunk> {
                     });
                     next_id += 1;
                 }
-                Item::Image(im) => {
+                PageItem::Image(im) => {
+                    if im.bbox.width() * im.bbox.height() / page_area < MIN_IMAGE_COVERAGE {
+                        continue; // icons/rules — not RAG content
+                    }
                     flush(&mut buf, &mut chunks, &mut next_id);
                     // Caption priority: an enhancer-supplied caption (VLM) wins;
                     // otherwise look for an adjacent in-document caption line.
                     let (caption, caption_source) = match (&im.caption, &im.caption_source) {
                         (Some(c), src) => (Some(c.clone()), src.clone()),
-                        _ => find_caption(blocks, im)
+                        _ => find_caption(&blocks, im)
                             .map(|(c, s)| (Some(c), Some(s.to_string())))
                             .unwrap_or((None, None)),
                     };
-                    let context = find_context(blocks, im);
+                    let context = find_context(&blocks, im);
                     let text = image_text(im.page, caption.as_deref(), context.as_deref());
                     chunks.push(Chunk {
                         id: next_id,
@@ -439,66 +345,11 @@ fn union(a: BBox, b: BBox) -> BBox {
     }
 }
 
-/// Whether a line reads as a figure caption ("Figure 3", "Fig. 2", "图3",
-/// "Abbildung 1"). Figure-only by design — table/"表" captions belong to table
-/// chunks, not images.
-fn is_caption_line(text: &str) -> bool {
-    let t = text.trim_start();
-    let lower = t.to_ascii_lowercase();
-    const PREFIXES: [&str; 4] = ["figure", "fig.", "fig ", "abbildung"];
-    if PREFIXES.iter().any(|p| lower.starts_with(p)) {
-        return true;
-    }
-    // CJK figure caption: 图/圖 directly followed by a digit or space.
-    let mut chars = t.chars();
-    matches!(chars.next(), Some('图' | '圖'))
-        && chars
-            .next()
-            .is_some_and(|c| c.is_ascii_digit() || c.is_whitespace())
-}
-
-/// Horizontal overlap between a block and an image box.
-fn h_overlap(b: &BBox, im: &BBox) -> bool {
-    b.x0 < im.x1 && im.x0 < b.x1
-}
-
-/// Clear vertical gap (PDF points) between an image and a block; 0 if they
-/// overlap vertically. (PDF y grows upward: `y1` is the top edge.)
-fn v_gap(b: &BBox, im: &BBox) -> f32 {
-    if b.y1 <= im.y0 {
-        im.y0 - b.y1 // block sits below the image
-    } else if b.y0 >= im.y1 {
-        b.y0 - im.y1 // block sits above the image
-    } else {
-        0.0 // vertically overlapping
-    }
-}
-
-/// Whether a block reads as this image's caption: a layout-model / tagged-PDF
-/// `Caption` block (precise), or a "Figure N" text-pattern block (zero-model
-/// fallback). Headings never count.
-fn block_is_caption(b: &Block) -> bool {
-    !b.heading && (b.caption || is_caption_line(&b.text))
-}
-
-/// Index into `blocks` of the adjacent in-document caption for an image, if any:
-/// the nearest horizontally-overlapping caption block within [`IMAGE_ADJ_GAP`].
-fn find_caption_idx(blocks: &[Block], im: &ImageChunk) -> Option<usize> {
-    blocks
-        .iter()
-        .enumerate()
-        .filter(|(_, b)| b.page == im.page && block_is_caption(b) && h_overlap(&b.bbox, &im.bbox))
-        .map(|(i, b)| (v_gap(&b.bbox, &im.bbox), i))
-        .filter(|(g, _)| *g <= IMAGE_ADJ_GAP)
-        .min_by(|(g1, _), (g2, _)| g1.partial_cmp(g2).unwrap_or(std::cmp::Ordering::Equal))
-        .map(|(_, i)| i)
-}
-
 /// The adjacent in-document caption for an image: its text + provenance
 /// (`"layout-caption"` for a model/tagged Caption block, else `"caption-line"`
 /// for a "Figure N" text match).
-fn find_caption(blocks: &[Block], im: &ImageChunk) -> Option<(String, &'static str)> {
-    find_caption_idx(blocks, im).map(|i| {
+fn find_caption(blocks: &[&Block], im: &ImageChunk) -> Option<(String, &'static str)> {
+    crate::layout::find_caption_idx(blocks, im).map(|i| {
         let source = if blocks[i].caption {
             "layout-caption"
         } else {
@@ -512,14 +363,17 @@ fn find_caption(blocks: &[Block], im: &ImageChunk) -> Option<(String, &'static s
 /// body blocks (caption lines excluded — those are the caption), nearest first,
 /// concatenated up to [`IMAGE_CONTEXT_CHARS`]. Lets "as shown in Fig. N" text
 /// retrieve the figure even when the figure itself has no caption.
-fn find_context(blocks: &[Block], im: &ImageChunk) -> Option<String> {
+fn find_context(blocks: &[&Block], im: &ImageChunk) -> Option<String> {
     let mut cands: Vec<(f32, &Block)> = blocks
         .iter()
         .filter(|b| {
-            b.page == im.page && !b.heading && h_overlap(&b.bbox, &im.bbox) && !block_is_caption(b)
+            b.page == im.page
+                && !b.heading
+                && crate::layout::h_overlap(&b.bbox, &im.bbox)
+                && !crate::layout::block_is_caption(b)
         })
-        .map(|b| (v_gap(&b.bbox, &im.bbox), b))
-        .filter(|(g, _)| *g <= IMAGE_ADJ_GAP)
+        .map(|b| (crate::layout::v_gap(&b.bbox, &im.bbox), *b))
+        .filter(|(g, _)| *g <= crate::layout::IMAGE_ADJ_GAP)
         .collect();
     cands.sort_by(|(g1, _), (g2, _)| g1.partial_cmp(g2).unwrap_or(std::cmp::Ordering::Equal));
     if cands.is_empty() {

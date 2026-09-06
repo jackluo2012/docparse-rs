@@ -56,6 +56,7 @@
 **OKF**：`--okf-resource-base <uri>`、`--okf-tar`、`--force`。
 **OCR**：`--ocr`、`--ocr-models <dir>`（默认 `models/ppocr-v6`，缺则 TTY 确认下载 / `DOCPARSE_OCR_DOWNLOAD=1`）。路由按页进行：有机器可读文本的页面原样通过；缺少可用文本的 PDF 页优先使用已解码的嵌入扫描图像，否则执行该页的完整 PDF 绘制程序、按需渲染为 RGB 后 OCR。这一回退同时覆盖仅有图像位置、没有图像对象，以及用矢量路径绘制文字外观的页面。
 **版面/结构**：`--layout`、`--layout-model <path>`（YOLO 默认 / PPV2 自动识别）、`--table-model <dir>`、`--formula-model <dir>`、`--transcribe-model <dir>`。
+**输出阅读顺序**：markdown / text / chunks 三种格式共享同一几何阅读顺序——表格与图片按页内位置 splice 回正文（`layout::page_items`），不再沉到页尾；`follows` 要求水平重叠 + 顶边在浮动之下，双栏/多栏页面不会串列。RAG chunk 使用 `page_items_chunk`（绑定的图注并入图片 chunk，不重复输出）。
 **VLM**：`--vlm-describe`、`--vlm-tables`、`--vlm-url`、`--vlm-model`、`--vlm-api-key`。
 **图片**：`--image-dir <dir>`、`--image-embed`。
 **质量/可观测**：`--quality`、`--profile`、`--route-plan`（均出 JSON 到 stderr）、`--quality-threshold <float>`（复核闸门：无文本层页恒列出，乱码率超阈值页列出，JSON 清单到 stderr，入库前人工复核）、`--progress auto\|always\|never\|json`、`-q/--quiet`、`--stats`。

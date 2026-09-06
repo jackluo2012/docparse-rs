@@ -7,6 +7,18 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Unified reading order across every output format: tables and images are
+  spliced back into the page's reading position instead of being dumped at the
+  page bottom. The chunk layer's geometry splice (`follows`: horizontal overlap
+  + float below a block) moved up into a shared `layout::page_items` /
+  `page_items_chunk` ordering consumed by markdown, text and RAG chunks alike,
+  so the three consumers now see the same order (previously RAG spliced
+  mid-text while markdown/text parked tables at the page end). Multi-column
+  pages stay column-safe: a right-column float never jumps ahead of a
+  left-column paragraph. Caption helpers and constants moved from `chunk.rs`
+  into `layout.rs` (`IMAGE_ADJ_GAP`, `MIN_IMAGE_COVERAGE`, `find_caption_idx`).
+  e2e on a real two-column PDF with a ruled middle table: markdown/text/chunks
+  all place the table between the column text and the bottom paragraph.
 - `--password-env <VAR>` / `--password-file <PATH>` — safe password injection
   for the CLI (`--password` counterpart, mutually exclusive): read the
   encrypted-PDF password from an environment variable or a secrets file instead

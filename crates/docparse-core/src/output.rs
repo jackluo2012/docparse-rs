@@ -5,49 +5,34 @@
 //! table is excluded, running headers/footers dropped, and consecutive lines
 //! grouped into paragraphs/headings. Tables render as their own blocks.
 
-use crate::ir::{Document, Element, Page, Table};
-use crate::layout::{self, Block};
+use crate::ir::{Document, Table};
+use crate::layout::{self, PageItem};
 
 /// Full IR as pretty JSON.
 pub fn to_json(doc: &Document) -> anyhow::Result<String> {
     Ok(serde_json::to_string_pretty(doc)?)
 }
 
-/// Tables detected on a page. Empty-row tables (e.g. an unfilled layout-seeded
-/// table-region placeholder) are skipped — a table with no cells isn't content.
-fn page_tables(page: &Page) -> Vec<&Table> {
-    page.elements
-        .iter()
-        .filter_map(|e| match e {
-            Element::Table(t) if !t.rows.is_empty() => Some(t),
-            _ => None,
-        })
-        .collect()
-}
-
-/// Per-page reconstruction: text blocks (table content excluded, headers/footers
-/// dropped, paragraphs grouped) plus the page's tables and renderable images.
+/// Per-page reconstruction in **reading order**: text blocks (table content
+/// excluded, headers/footers dropped, paragraphs grouped) with tables/images
+/// spliced into their geometric position — a float is rendered where it sits
+/// on the page, not after all text. Images worth rendering: exported to disk
+/// (`file` set, referenced in Markdown) or carrying a caption (a VLM
+/// description to surface).
 struct PageContent<'a> {
-    blocks: Vec<Block>,
-    tables: Vec<&'a Table>,
-    /// Images worth rendering: exported to disk (`file` set, referenced in
-    /// Markdown) or carrying a caption (a VLM description to surface).
-    images: Vec<&'a crate::ir::ImageChunk>,
+    items: Vec<PageItem<'a>>,
 }
 
 fn document_content(doc: &Document) -> Vec<PageContent<'_>> {
-    layout::page_blocks(doc)
+    layout::page_items(doc)
         .into_iter()
         .zip(&doc.pages)
-        .map(|(blocks, page)| PageContent {
-            blocks,
-            tables: page_tables(page),
-            images: page
-                .elements
-                .iter()
-                .filter_map(|e| match e {
-                    Element::Image(i) if i.file.is_some() || i.caption.is_some() => Some(i),
-                    _ => None,
+        .map(|(items, _page)| PageContent {
+            items: items
+                .into_iter()
+                .filter(|it| match it {
+                    PageItem::Image(i) => i.file.is_some() || i.caption.is_some(),
+                    _ => true,
                 })
                 .collect(),
         })
@@ -58,22 +43,26 @@ fn document_content(doc: &Document) -> Vec<PageContent<'_>> {
 pub fn to_text(doc: &Document) -> String {
     let mut s = String::new();
     for pc in document_content(doc) {
-        for block in &pc.blocks {
-            s.push_str(block.text.trim());
-            s.push('\n');
-        }
-        for table in &pc.tables {
-            for row in &table.rows {
-                let cells: Vec<&str> = row.iter().map(|c| c.text.trim()).collect();
-                s.push_str(&cells.join("\t"));
-                s.push('\n');
-            }
-            s.push('\n');
-        }
-        for img in &pc.images {
-            if let Some(c) = &img.caption {
-                s.push_str(c.trim());
-                s.push('\n');
+        for item in &pc.items {
+            match item {
+                PageItem::Block(b) => {
+                    s.push_str(b.text.trim());
+                    s.push('\n');
+                }
+                PageItem::Table(t) => {
+                    for row in &t.rows {
+                        let cells: Vec<&str> = row.iter().map(|c| c.text.trim()).collect();
+                        s.push_str(&cells.join("\t"));
+                        s.push('\n');
+                    }
+                    s.push('\n');
+                }
+                PageItem::Image(i) => {
+                    if let Some(c) = &i.caption {
+                        s.push_str(c.trim());
+                        s.push('\n');
+                    }
+                }
             }
         }
         s.push('\n');
@@ -86,62 +75,68 @@ pub fn to_text(doc: &Document) -> String {
 pub fn to_markdown(doc: &Document) -> String {
     let mut md = format!("<!-- source: {} -->\n\n", doc.source);
     for pc in document_content(doc) {
-        for block in &pc.blocks {
-            let t = block.text.trim();
-            if t.is_empty() {
-                continue;
-            }
-            if block.code {
-                md.push_str("```\n");
-                md.push_str(&block.text);
-                md.push_str("\n```\n\n");
-                continue;
-            }
-            if block.list_item {
-                // Bullets normalize to "-"; ordinals keep their own numbering
-                // (Markdown renders both as lists).
-                let t = block.text.trim_start();
-                let rendered = match t.chars().next() {
-                    Some('•' | '·' | '‣' | '▪' | '◦' | '○' | '–') => {
-                        format!(
-                            "- {}",
-                            t[t.chars().next().unwrap().len_utf8()..].trim_start()
-                        )
+        for item in &pc.items {
+            match item {
+                PageItem::Block(b) => {
+                    let block = b;
+                    let t = block.text.trim();
+                    if t.is_empty() {
+                        continue;
                     }
-                    _ => t.to_string(),
-                };
-                md.push_str(&rendered);
-                md.push('\n');
-                continue;
-            }
-            if block.heading {
-                // Level 1 → "## " (single # reserved for a document title),
-                // deeper levels nest accordingly.
-                for _ in 0..(block.level.clamp(1, 4) + 1) {
-                    md.push('#');
+                    if block.code {
+                        md.push_str("```\n");
+                        md.push_str(&block.text);
+                        md.push_str("\n```\n\n");
+                        continue;
+                    }
+                    if block.list_item {
+                        // Bullets normalize to "-"; ordinals keep their own numbering
+                        // (Markdown renders both as lists).
+                        let t = block.text.trim_start();
+                        let rendered = match t.chars().next() {
+                            Some('•' | '·' | '‣' | '▪' | '◦' | '○' | '–') => {
+                                format!(
+                                    "- {}",
+                                    t[t.chars().next().unwrap().len_utf8()..].trim_start()
+                                )
+                            }
+                            _ => t.to_string(),
+                        };
+                        md.push_str(&rendered);
+                        md.push('\n');
+                        continue;
+                    }
+                    if block.heading {
+                        // Level 1 → "## " (single # reserved for a document title),
+                        // deeper levels nest accordingly.
+                        for _ in 0..(block.level.clamp(1, 4) + 1) {
+                            md.push('#');
+                        }
+                        md.push(' ');
+                    }
+                    md.push_str(t);
+                    md.push_str("\n\n");
                 }
-                md.push(' ');
-            }
-            md.push_str(t);
-            md.push_str("\n\n");
-        }
-        for table in &pc.tables {
-            md.push_str(&markdown_table(table));
-            md.push('\n');
-        }
-        for img in &pc.images {
-            // Caption (e.g. a VLM description) becomes the image's alt text;
-            // a caption-only image (no exported file) still surfaces its text.
-            let alt = img
-                .caption
-                .as_deref()
-                .map(|c| c.replace(['\n', '\r'], " ").replace(']', ")"))
-                .unwrap_or_else(|| format!("image p{}", img.page));
-            match &img.file {
-                Some(f) => md.push_str(&format!("![{alt}]({f})\n\n")),
-                None => {
-                    if img.caption.is_some() {
-                        md.push_str(&format!("*{}*\n\n", alt.trim()));
+                PageItem::Table(t) => {
+                    md.push_str(&markdown_table(t));
+                    md.push('\n');
+                }
+                PageItem::Image(i) => {
+                    // Caption (e.g. a VLM description) becomes the image's alt
+                    // text; a caption-only image (no exported file) still
+                    // surfaces its text.
+                    let alt = i
+                        .caption
+                        .as_deref()
+                        .map(|c| c.replace(['\n', '\r'], " ").replace(']', ")"))
+                        .unwrap_or_else(|| format!("image p{}", i.page));
+                    match &i.file {
+                        Some(f) => md.push_str(&format!("![{alt}]({f})\n\n")),
+                        None => {
+                            if i.caption.is_some() {
+                                md.push_str(&format!("*{}*\n\n", alt.trim()));
+                            }
+                        }
                     }
                 }
             }
@@ -180,7 +175,7 @@ fn markdown_table(table: &Table) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{BBox, ImageChunk, ImageKind, Page};
+    use crate::ir::{BBox, Element, ImageChunk, ImageKind, Page};
 
     fn img(file: Option<&str>, caption: Option<&str>) -> Element {
         Element::Image(ImageChunk {
@@ -242,5 +237,129 @@ mod tests {
     fn image_without_file_or_caption_is_not_rendered() {
         let md = to_markdown(&doc(vec![img(None, None)]));
         assert!(!md.contains("!["), "no image syntax: {md}");
+    }
+
+    #[test]
+    fn table_renders_between_paragraphs_in_markdown_and_text() {
+        let d = doc(vec![
+            crate::ir::Element::Text(crate::ir::TextChunk {
+                text: "A paragraph above the table.".into(),
+                bbox: BBox {
+                    x0: 10.0,
+                    y0: 700.0,
+                    x1: 300.0,
+                    y1: 720.0,
+                },
+                font_size: 10.0,
+                font: None,
+                page: 1,
+                confidence: 1.0,
+                bold: false,
+                hidden: false,
+                source: None,
+                group: None,
+                tag: None,
+            }),
+            crate::ir::Element::Table(crate::ir::Table {
+                bbox: BBox {
+                    x0: 10.0,
+                    y0: 500.0,
+                    x1: 300.0,
+                    y1: 600.0,
+                },
+                page: 1,
+                rows: vec![vec![crate::ir::Cell {
+                    text: "head".into(),
+                    bbox: BBox {
+                        x0: 10.0,
+                        y0: 590.0,
+                        x1: 50.0,
+                        y1: 600.0,
+                    },
+                    row_span: 1,
+                    col_span: 1,
+                    merged: false,
+                }]],
+                source: None,
+            }),
+            crate::ir::Element::Text(crate::ir::TextChunk {
+                text: "B paragraph below the table.".into(),
+                bbox: BBox {
+                    x0: 10.0,
+                    y0: 400.0,
+                    x1: 300.0,
+                    y1: 420.0,
+                },
+                font_size: 10.0,
+                font: None,
+                page: 1,
+                confidence: 1.0,
+                bold: false,
+                hidden: false,
+                source: None,
+                group: None,
+                tag: None,
+            }),
+        ]);
+        let md = to_markdown(&d);
+        let a = md.find("A paragraph").expect("A in md");
+        let t = md.find("| head |").expect("table row in md");
+        let b = md.find("B paragraph").expect("B in md");
+        assert!(a < t && t < b, "table must sit between paragraphs: {md}");
+
+        let txt = to_text(&d);
+        let ta = txt.find("A paragraph").expect("A in text");
+        let tt = txt.find("head").expect("table cell in text");
+        let tb = txt.find("B paragraph").expect("B in text");
+        assert!(
+            ta < tt && tt < tb,
+            "table must sit between paragraphs: {txt}"
+        );
+    }
+
+    #[test]
+    fn no_floats_output_keeps_block_order() {
+        let d = doc(vec![
+            crate::ir::Element::Text(crate::ir::TextChunk {
+                text: "First paragraph.".into(),
+                bbox: BBox {
+                    x0: 10.0,
+                    y0: 700.0,
+                    x1: 300.0,
+                    y1: 720.0,
+                },
+                font_size: 10.0,
+                font: None,
+                page: 1,
+                confidence: 1.0,
+                bold: false,
+                hidden: false,
+                source: None,
+                group: None,
+                tag: None,
+            }),
+            crate::ir::Element::Text(crate::ir::TextChunk {
+                text: "Second paragraph.".into(),
+                bbox: BBox {
+                    x0: 10.0,
+                    y0: 600.0,
+                    x1: 300.0,
+                    y1: 620.0,
+                },
+                font_size: 10.0,
+                font: None,
+                page: 1,
+                confidence: 1.0,
+                bold: false,
+                hidden: false,
+                source: None,
+                group: None,
+                tag: None,
+            }),
+        ]);
+        let md = to_markdown(&d);
+        let a = md.find("First paragraph").unwrap();
+        let b = md.find("Second paragraph").unwrap();
+        assert!(a < b, "plain text keeps block order: {md}");
     }
 }
