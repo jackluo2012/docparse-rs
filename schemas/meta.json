@@ -1,0 +1,104 @@
+{
+  "$defs": {
+    "Metadata": {
+      "description": "Container-carried document metadata — the PDF Info dictionary, OOXML\n`docProps/core.xml`, or HTML `<title>`/`<meta>`, whichever the format has.\nEvery field is optional: backends fill exactly what the container carries\nand never invent values (dates are normalized to ISO 8601; anything\nunparsable stays `None`). `None` itself = the format has no metadata\nsource (CSV/SRT/…) — absent from JSON, so `-f json` bytes stay unchanged\nfor such documents.",
+      "properties": {
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "description": "ISO 8601 UTC (`2026-09-06T12:34:56Z`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "creator": {
+          "description": "The creating application (\"Microsoft Word 2019\"); PDF `/Creator`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keywords": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modified": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "producer": {
+          "description": "The producing converter/library (\"docparse-rs\", \"Ghostscript\"); PDF\n`/Producer`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "description": "The `-f meta` projection: what you'd want next to the parsed content when\ningesting into a corpus — identity, producer, size, and the metadata.",
+  "properties": {
+    "metadata": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Metadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Container metadata, `None` when the format has no metadata source."
+    },
+    "page_count": {
+      "format": "uint",
+      "minimum": 0,
+      "type": "integer"
+    },
+    "parser": {
+      "description": "Producing parser, e.g. \"pdf\" (from the provenance).",
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "source": {
+      "description": "Same value as `Document.source`.",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "page_count"
+  ],
+  "title": "MetaReport",
+  "type": "object"
+}

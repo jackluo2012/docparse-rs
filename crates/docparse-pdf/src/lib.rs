@@ -13,6 +13,7 @@ mod font;
 mod images;
 mod interpreter;
 mod matrix;
+mod metadata;
 mod outlines;
 mod stdmetrics;
 mod structure;
@@ -118,6 +119,7 @@ impl PdfParser {
         Ok(Document {
             source: "<pdf>".to_string(),
             provenance: Some(Provenance::new("pdf", env!("CARGO_PKG_VERSION"))),
+            metadata: metadata::info_metadata(&doc),
             pages,
         })
     }

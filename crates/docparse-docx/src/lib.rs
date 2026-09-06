@@ -51,6 +51,7 @@ pub fn parse_bytes(buf: &[u8]) -> anyhow::Result<Document> {
     Ok(Document {
         source: "<docx>".to_string(),
         provenance: Some(Provenance::new("docx", env!("CARGO_PKG_VERSION"))),
+        metadata: docparse_core::meta::ooxml_metadata_from_zip(buf),
         pages: document_pages(&docx),
     })
 }

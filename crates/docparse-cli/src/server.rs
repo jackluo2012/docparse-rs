@@ -144,15 +144,23 @@ fn openapi_doc() -> serde_json::Value {
                         json!({
                             "name": "format", "in": "query", "required": false,
                             "schema": { "type": "string",
-                                        "enum": ["json", "markdown", "text", "chunks", "outline", "okf"],
+                                        "enum": ["json", "markdown", "text", "chunks", "outline", "meta", "okf"],
                                         "default": "json" },
-                            "description": "Output format. json→document schema, chunks→array of chunk, \
+                            "description": "Output format. json→document schema, chunks→array of chunk, meta→meta schema, \
                                             outline→outline schema, okf→application/x-tar bundle."
                         }),
                         bool_param("envelope", "chunks only: wrap the array as {provenance,quality,profile,chunks}."),
                         json!({ "name": "table_format", "in": "query", "required": false,
                                 "schema": { "type": "string", "enum": ["tab", "markdown"] },
                                 "description": "chunks only: table chunk rendering." }),
+                        json!({ "name": "pages", "in": "query", "required": false,
+                                "schema": { "type": "string",
+                                            "examples": ["1-5,10", "20-"] },
+                                "description": "Only keep these pages: 1-based, endpoint-inclusive, \
+                                                comma-separated; an open end (\"20-\") runs to the last \
+                                                page. Filtering runs after enhancement and before \
+                                                rendering; output pages keep absolute numbering. An \
+                                                explicit page beyond the document is an error." }),
                         json!({ "name": "resource_base", "in": "query", "required": false,
                                 "schema": { "type": "string" }, "description": "okf only: concept resource URI prefix." }),
                         json!({ "name": "password", "in": "query", "required": false,
@@ -220,6 +228,17 @@ async fn parse(
     mut multipart: Multipart,
 ) -> Response {
     let format = q.get("format").cloned().unwrap_or_else(|| "json".into());
+    // ?pages= — validate syntax up front (a bad spec is a 400 before any
+    // heavy work); the bounds check needs the real page count, so it runs
+    // right after the (possibly cached) parse below.
+    let pages = match q
+        .get("pages")
+        .map(|s| docparse_core::pages::PageSpec::parse(s))
+    {
+        Some(Ok(spec)) => Some(spec),
+        Some(Err(e)) => return err(StatusCode::BAD_REQUEST, &format!("{e:#}")),
+        None => None,
+    };
     let flag = |k: &str| matches!(q.get(k).map(String::as_str), Some("1") | Some("true"));
     let images_embedded = q.get("images").map(String::as_str) == Some("embedded");
     // chunks 专用：?envelope=true 把裸 chunk 数组包成 {provenance,quality,profile,chunks}
@@ -273,7 +292,7 @@ async fn parse(
         let resource_base = q.get("resource_base").cloned().unwrap_or_default();
         let (tp, tn, st) = (tmp.clone(), name.clone(), state.clone());
         let res = tokio::task::spawn_blocking(move || {
-            render_okf_tar(&tp, &tn, opts, resource_base, password.clone(), &st)
+            render_okf_tar(&tp, &tn, opts, resource_base, password.clone(), pages, &st)
         })
         .await;
         let elapsed_ms = started.elapsed().as_millis().to_string();
@@ -309,13 +328,20 @@ async fn parse(
         // Model load (first enhanced request only) and inference are both
         // CPU-bound — they belong on the blocking pool with the parse. The
         // cache lookup/replay runs here too (content hash is file I/O).
-        let (doc, cached) = crate::parse_enhanced_cached(
+        let (mut doc, cached) = crate::parse_enhanced_cached(
             &task_path,
             Some(&task_name),
             opts,
             password.clone(),
             &task_state,
         )?;
+        // ?pages=: filter after the cache replay (the cached unit is the full
+        // enhanced document, so different page specs share one entry) and
+        // before rendering. Page numbers stay absolute — see core::pages.
+        if let Some(spec) = &pages {
+            let keep = spec.resolve(doc.pages.len())?;
+            docparse_core::pages::retain_pages(&mut doc, &keep);
+        }
         let (body, content_type) = render_doc(&doc, &format, envelope, table_markdown)?;
         Ok::<_, anyhow::Error>((body, content_type, cached))
     })
@@ -450,8 +476,15 @@ fn render_doc(
             docparse_core::outline::to_json(&docparse_core::outline::build(doc)),
             "application/json",
         ),
+        "meta" => (
+            // Metadata projection (source/parser/page count/container metadata).
+            docparse_core::meta::to_json(&docparse_core::meta::report(doc)),
+            "application/json",
+        ),
         // `okf` is intercepted by the handler (binary tar) before reaching here.
-        other => anyhow::bail!("unknown format: {other} (json|markdown|text|chunks|outline|okf)"),
+        other => {
+            anyhow::bail!("unknown format: {other} (json|markdown|text|chunks|outline|meta|okf)")
+        }
     })
 }
 
@@ -466,10 +499,15 @@ fn render_okf_tar(
     opts: crate::EnhanceOpts,
     resource_base: String,
     password: Option<String>,
+    pages: Option<docparse_core::pages::PageSpec>,
     state: &crate::EnhanceState,
 ) -> anyhow::Result<(Vec<u8>, Option<bool>)> {
-    let (doc, cached) =
+    let (mut doc, cached) =
         crate::parse_enhanced_cached(path, Some(source_name), opts, password, state)?;
+    if let Some(spec) = &pages {
+        let keep = spec.resolve(doc.pages.len())?;
+        docparse_core::pages::retain_pages(&mut doc, &keep);
+    }
     let okf_opts = crate::okf_options_for(path, resource_base, false);
     Ok((docparse_core::okf::build(&doc, &okf_opts).to_tar(), cached))
 }

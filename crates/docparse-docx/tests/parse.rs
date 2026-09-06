@@ -39,6 +39,20 @@ fn parses_headings_paragraphs_and_table() {
 }
 
 #[test]
+fn metadata_reads_core_xml() {
+    let bytes = include_bytes!("fixtures/sample.docx");
+    let doc = docparse_docx::parse_bytes(bytes).expect("parse docx");
+
+    // The container has a docProps/core.xml, so metadata is `Some` even when
+    // individual fields are empty — `None` is reserved for formats with no
+    // metadata source at all.
+    let meta = doc.metadata.expect("docx carries core.xml");
+    assert_eq!(meta.author.as_deref(), Some("python-docx"));
+    // The fixture's <dc:title/> is empty → absent, never an empty string.
+    assert_eq!(meta.title, None);
+}
+
+#[test]
 fn rejects_zip_bomb_without_decompressing() {
     // A ZIP whose central directory forges a tiny compressed entry as a huge
     // uncompressed one (bomb shape). The guard reads only the central

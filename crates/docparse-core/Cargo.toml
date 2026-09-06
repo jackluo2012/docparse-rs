@@ -12,6 +12,9 @@ anyhow.workspace = true
 encoding_rs.workspace = true
 chardetng.workspace = true
 rayon.workspace = true
+# Shared docProps/core.xml parsing for the DOCX/PPTX/XLSX backends' metadata.
+quick-xml.workspace = true
+zip.workspace = true
 libc.workspace = true
 schemars = { workspace = true, optional = true }
 

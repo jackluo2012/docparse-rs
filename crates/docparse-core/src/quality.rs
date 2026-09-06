@@ -314,6 +314,7 @@ mod tests {
         Document {
             source: "t".into(),
             provenance: None,
+            metadata: None,
             pages,
         }
     }

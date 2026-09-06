@@ -530,6 +530,7 @@ mod tests {
         Document {
             source: "paper.pdf".into(),
             provenance: None,
+            metadata: None,
             pages: vec![Page {
                 number: 1,
                 width: 612.0,

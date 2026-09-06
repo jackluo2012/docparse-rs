@@ -85,6 +85,7 @@ pub fn parse_bytes(bytes: &[u8]) -> anyhow::Result<Document> {
     Ok(Document {
         source: "<eml>".to_string(),
         provenance: Some(Provenance::new("eml", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: b.finish(),
     })
 }

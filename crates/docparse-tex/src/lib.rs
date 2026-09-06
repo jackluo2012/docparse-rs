@@ -281,6 +281,7 @@ pub fn parse_str(src: &str) -> Document {
     Document {
         source: "<latex>".to_string(),
         provenance: Some(Provenance::new("latex", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: b.finish(),
     }
 }

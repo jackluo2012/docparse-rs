@@ -276,6 +276,7 @@ pub fn apply_with(
     let out = Document {
         source: doc.source.clone(),
         provenance: doc.provenance.clone(),
+        metadata: doc.metadata.clone(),
         pages,
     };
     (out, report)
@@ -390,6 +391,7 @@ mod tests {
         Document {
             source: "t".into(),
             provenance: None,
+            metadata: None,
             pages,
         }
     }

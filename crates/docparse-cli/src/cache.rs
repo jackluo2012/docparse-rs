@@ -91,6 +91,11 @@ pub fn output_signature(cli: &Cli) -> String {
     let _ = write!(s, ";table={:?}", cli.table_format);
     let _ = write!(s, ";chunk_target={}", cli.chunk_target_chars);
     let _ = write!(s, ";password={:?}", cli.password);
+    // --pages: appended only when set, so signatures minted before the flag
+    // existed stay valid (no gratuitous whole-cache invalidation).
+    if let Some(pages) = &cli.pages {
+        let _ = write!(s, ";pages={pages}");
+    }
     let _ = write!(
         s,
         ";ocr={};ocr_models={}",
@@ -262,6 +267,16 @@ mod tests {
         assert_ne!(
             output_signature(&base),
             output_signature(&cli(&["--password", "x"]))
+        );
+        // --pages changes the rendered output, so it must change the signature…
+        assert_ne!(
+            output_signature(&base),
+            output_signature(&cli(&["--pages", "1-5"]))
+        );
+        // …and two different specs must not collide.
+        assert_ne!(
+            output_signature(&cli(&["--pages", "1-5"])),
+            output_signature(&cli(&["--pages", "2-5"]))
         );
         // Stderr-only / batch-mechanics flags must NOT change the signature.
         assert_eq!(

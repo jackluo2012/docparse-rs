@@ -693,6 +693,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tokio",
+ "ureq",
 ]
 
 [[package]]
@@ -703,10 +704,12 @@ dependencies = [
  "chardetng",
  "encoding_rs",
  "libc",
+ "quick-xml 0.37.5",
  "rayon",
  "schemars",
  "serde",
  "serde_json",
+ "zip 2.4.2",
 ]
 
 [[package]]

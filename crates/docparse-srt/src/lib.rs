@@ -53,6 +53,7 @@ pub fn parse_str(text: &str) -> Document {
     Document {
         source: "<subtitle>".to_string(),
         provenance: Some(Provenance::new("subtitle", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: b.finish(),
     }
 }

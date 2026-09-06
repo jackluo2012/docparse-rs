@@ -109,6 +109,20 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+/// The shared `pages` tool argument (parse_document / get_chunks / outline /
+/// export_okf): same spec syntax as the CLI's `--pages`. Filtering happens
+/// after enhancement and before rendering; page numbers in the output keep
+/// their absolute document numbering.
+fn pages_arg_schema() -> Value {
+    json!({
+        "type": "string",
+        "description": "Only keep these pages: 1-based, endpoint-inclusive, \
+                        comma-separated (\"1-5,10\"), an open end (\"20-\") runs to \
+                        the last page. Output pages keep absolute numbering; an \
+                        explicit page beyond the document is an error."
+    })
+}
+
 fn tool_specs() -> Value {
     let mut tools = json!([
         {
@@ -137,7 +151,8 @@ fn tool_specs() -> Value {
                     "vlm_tables": { "type": "boolean",
                                     "description": "Re-extract tables via the configured VLM service (PDF only)" },
                     "images": { "type": "string", "enum": ["embedded"],
-                                "description": "\"embedded\" adds data_base64 + data_media_type to image elements (json format)" }
+                                "description": "\"embedded\" adds data_base64 + data_media_type to image elements (json format)" },
+                    "pages": pages_arg_schema()
                 },
                 "required": ["path"]
             }
@@ -160,7 +175,8 @@ fn tool_specs() -> Value {
                     "table_model": { "type": "boolean", "description": "UniRec table structure (PDF only)" },
                     "formula_model": { "type": "boolean", "description": "Formulas to LaTeX (PDF only)" },
                     "vlm_describe": { "type": "boolean", "description": "VLM figure captions (PDF only)" },
-                    "vlm_tables": { "type": "boolean", "description": "VLM table re-extraction (PDF only)" }
+                    "vlm_tables": { "type": "boolean", "description": "VLM table re-extraction (PDF only)" },
+                    "pages": pages_arg_schema()
                 },
                 "required": ["path"]
             }
@@ -183,7 +199,8 @@ fn tool_specs() -> Value {
                     "max_depth": { "type": "integer",
                                    "description": "Prune deeper than this many levels (0 = just the node; default: full tree)" },
                     "ocr": { "type": "boolean", "description": "OCR pages lacking machine-readable text first (default false)" },
-                    "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" }
+                    "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" },
+                    "pages": pages_arg_schema()
                 },
                 "required": ["path"]
             }
@@ -204,7 +221,8 @@ fn tool_specs() -> Value {
                     "resource_base": { "type": "string",
                                        "description": "Prefix for concept resource URIs (default: bare basename)" },
                     "ocr": { "type": "boolean", "description": "OCR pages lacking machine-readable text first (default false)" },
-                    "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" }
+                    "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" },
+                    "pages": pages_arg_schema()
                 },
                 "required": ["path"]
             }
@@ -487,7 +505,16 @@ fn parse_enhanced(
         vlm_describe: flag("vlm_describe"),
         vlm_tables: flag("vlm_tables"),
     };
-    crate::parse_enhanced_cached(path, None, opts, password, state).map(|(doc, _)| doc)
+    let mut doc =
+        crate::parse_enhanced_cached(path, None, opts, password, state).map(|(doc, _)| doc)?;
+    // `pages`: filter after the cache replay (the cached unit is the full
+    // enhanced document, so different `pages` values share one entry instead
+    // of fragmenting the cache) and before any tool rendering. Page numbers
+    // stay absolute — see core::pages.
+    if let Some(spec) = args.get("pages").and_then(Value::as_str) {
+        docparse_core::pages::retain_pages_spec(&mut doc, spec)?;
+    }
+    Ok(doc)
 }
 
 fn tool_parse_document(args: &Value, state: &crate::EnhanceState) -> anyhow::Result<String> {
@@ -684,6 +711,46 @@ mod tests {
         // No hit off-page → match is null, but still a valid object.
         assert!(r["structuredContent"].is_object());
         assert!(r["structuredContent"]["match"].is_null());
+    }
+
+    #[test]
+    fn pages_arg_filters_and_bounds_checks() {
+        let path = temp_html("docparse-mcp-pages.html");
+        // In-range pages spec passes through untouched (single-page doc).
+        let r = result_of(&req(
+            "tools/call",
+            json!({ "name": "get_chunks",
+                    "arguments": { "path": path, "pages": "1" } }),
+        ));
+        assert_eq!(r["isError"], false);
+        let plain = result_of(&req(
+            "tools/call",
+            json!({ "name": "get_chunks", "arguments": { "path": path } }),
+        ));
+        assert_eq!(
+            r["structuredContent"]["chunks"], plain["structuredContent"]["chunks"],
+            "an in-range spec on a 1-page doc must not change the chunks"
+        );
+        // Out-of-range explicit page → a clear tool error, not empty output.
+        let r = result_of(&req(
+            "tools/call",
+            json!({ "name": "get_chunks",
+                    "arguments": { "path": path, "pages": "5" } }),
+        ));
+        assert_eq!(r["isError"], true);
+        let msg = r["content"][0]["text"].as_str().expect("error text");
+        assert!(msg.contains("out of range"), "{msg}");
+        // Bad syntax errors the same way.
+        let r = result_of(&req(
+            "tools/call",
+            json!({ "name": "get_chunks",
+                    "arguments": { "path": path, "pages": "3-1" } }),
+        ));
+        assert_eq!(r["isError"], true);
+        assert!(r["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("starts after it ends"));
     }
 
     #[test]

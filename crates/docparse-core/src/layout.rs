@@ -1127,6 +1127,7 @@ mod page_items_tests {
         Document {
             source: "t".into(),
             provenance: None,
+            metadata: None,
             pages: vec![Page {
                 number: 1,
                 width: 612.0,
@@ -1199,6 +1200,7 @@ mod page_items_tests {
         Document {
             source: "t".into(),
             provenance: None,
+            metadata: None,
             pages: (1..=pages)
                 .map(|p| Page {
                     number: p,

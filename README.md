@@ -75,6 +75,10 @@ docparse input.pdf -f json       # full IR: provenance + coordinates
 docparse input.pdf -f markdown   # Markdown
 docparse input.pdf -f chunks     # RAG chunks (page + bbox + breadcrumbs + section_id)
 docparse input.pdf -f chunks --chunk-target-chars 400   # tune chunk size for dense vector indexes (default 800)
+docparse big.pdf  --pages 1-5,10 -f chunks   # keep only these pages; chunk citations stay absolute
+docparse input.pdf -f meta       # document metadata (title/author/dates) for RAG ingestion
+docparse locate doc.pdf --page 3 --x 210 --y 700 --top-left  # which chunk covers this point?
+curl -sL https://example.com/report.pdf | docparse - -f chunks   # pipe or URL straight in
 docparse input.pdf -f outline    # document structure tree (nested sections, citable)
 docparse input.pdf -f okf        # OKF knowledge bundle → report-okf/ (git-native, --okf-tar for stdout)
 docparse ./papers --out-dir out/ --jobs 8   # batch a folder (file-level parallelism for digital docs)

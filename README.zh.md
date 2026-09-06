@@ -72,6 +72,10 @@ docparse input.pdf -f json       # 完整 IR：provenance + 坐标
 docparse input.pdf -f markdown   # Markdown
 docparse input.pdf -f chunks     # RAG 切块（page + bbox + 面包屑）
 docparse input.pdf -f chunks --chunk-target-chars 400   # 调小切块尺寸适配密集向量索引（默认 800 字符）
+docparse big.pdf  --pages 1-5,10 -f chunks   # 只解析这些页；chunk 引用仍是绝对页码
+docparse input.pdf -f meta       # 文档元数据（标题/作者/时间，RAG 入库）
+docparse locate doc.pdf --page 3 --x 210 --y 700 --top-left  # 坐标反查所在切块
+curl -sL https://example.com/report.pdf | docparse - -f chunks   # 管道 / URL 直接进
 docparse scan.pdf  --ocr         # OCR 无机器可读文本的页面；数字文本页原样通过
 ```
 

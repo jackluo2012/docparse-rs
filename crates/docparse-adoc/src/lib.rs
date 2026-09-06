@@ -146,6 +146,7 @@ pub fn parse_str(src: &str) -> Document {
     Document {
         source: "<asciidoc>".to_string(),
         provenance: Some(Provenance::new("asciidoc", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: b.finish(),
     }
 }

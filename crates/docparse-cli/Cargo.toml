@@ -12,6 +12,8 @@ name = "docparse"
 path = "src/main.rs"
 
 [dependencies]
+# URL input (`docparse https://…`): already in the workspace for the VLM face.
+ureq.workspace = true
 docparse-core = { path = "../docparse-core", features = ["schema"] }
 docparse-pdf = { path = "../docparse-pdf" }
 docparse-docx = { path = "../docparse-docx" }

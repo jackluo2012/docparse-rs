@@ -91,6 +91,7 @@ pub fn parse_bytes(bytes: &[u8], ext: &str) -> anyhow::Result<Document> {
     Ok(Document {
         source: "<image>".to_string(),
         provenance: Some(Provenance::new("image", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: vec![page],
     })
 }

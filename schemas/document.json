@@ -209,6 +209,69 @@
         }
       ]
     },
+    "Metadata": {
+      "description": "Container-carried document metadata — the PDF Info dictionary, OOXML\n`docProps/core.xml`, or HTML `<title>`/`<meta>`, whichever the format has.\nEvery field is optional: backends fill exactly what the container carries\nand never invent values (dates are normalized to ISO 8601; anything\nunparsable stays `None`). `None` itself = the format has no metadata\nsource (CSV/SRT/…) — absent from JSON, so `-f json` bytes stay unchanged\nfor such documents.",
+      "properties": {
+        "author": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "created": {
+          "description": "ISO 8601 UTC (`2026-09-06T12:34:56Z`).",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "creator": {
+          "description": "The creating application (\"Microsoft Word 2019\"); PDF `/Creator`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "keywords": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "language": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "modified": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "producer": {
+          "description": "The producing converter/library (\"docparse-rs\", \"Ghostscript\"); PDF\n`/Producer`.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "subject": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "title": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      },
+      "type": "object"
+    },
     "Page": {
       "properties": {
         "elements": {
@@ -374,6 +437,17 @@
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "metadata": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Metadata"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "description": "Container metadata, when the format carries any (0.9.0+; see\n[`Metadata`])."
+    },
     "pages": {
       "items": {
         "$ref": "#/$defs/Page"

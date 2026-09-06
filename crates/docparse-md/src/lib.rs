@@ -146,6 +146,7 @@ pub fn parse_str(text: &str) -> Document {
     Document {
         source: "<markdown>".to_string(),
         provenance: Some(Provenance::new("markdown", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: b.finish(),
     }
 }

@@ -39,6 +39,7 @@ pub fn parse_str(text: &str) -> Document {
     Document {
         source: "<csv>".to_string(),
         provenance: Some(Provenance::new("csv", env!("CARGO_PKG_VERSION"))),
+        metadata: None,
         pages: b.finish(),
     }
 }

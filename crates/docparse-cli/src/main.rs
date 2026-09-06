@@ -3,6 +3,7 @@
 mod batch;
 mod cache;
 mod fetch_models;
+mod input_source;
 mod mcp;
 mod progress;
 mod resources;
@@ -115,6 +116,23 @@ struct Cli {
     /// Output format.
     #[arg(short, long, value_enum, default_value_t = Format::Json)]
     format: Format,
+
+    /// Only keep these pages, given 1-based and endpoint-inclusive:
+    /// "3" (single), "1-5" (range), "10-" (open-ended to the last page),
+    /// comma-separated combos like "1-5,10". Filtering runs after parsing and
+    /// before any enhancement, so OCR/layout models only ever see the kept
+    /// pages. Page numbers keep their absolute document numbering — chunks
+    /// and outline still cite the original pages. An explicit page beyond the
+    /// document is an error, never a silent truncate.
+    #[arg(long, value_name = "SPEC")]
+    pages: Option<String>,
+
+    /// Explicit format for a stdin (`-`) or URL input whose format can't be
+    /// inferred (no %PDF- magic, no URL suffix, no Content-Type). One of:
+    /// pdf|docx|html|xlsx|pptx|md|csv|srt|tex|eml|img|adoc. Ignored for
+    /// regular file inputs.
+    #[arg(long, value_enum)]
+    input_format: Option<input_source::InputFormat>,
 
     /// Table rendering inside `-f chunks` text (tab=default, markdown=pipe table).
     #[arg(long, value_enum, default_value_t = TableFormat::Tab)]
@@ -432,6 +450,32 @@ enum Command {
         /// unirec/, layout-ppv2/) are created under it.
         #[arg(long, value_name = "DIR", default_value = "models")]
         dir: PathBuf,
+    },
+    /// Reverse citation lookup (the CLI face of the MCP `locate` tool):
+    /// print the retrieval chunk covering the given point on a page.
+    Locate {
+        /// The document to search.
+        file: PathBuf,
+        /// 1-based page number.
+        #[arg(long)]
+        page: usize,
+        /// X coordinate in PDF user space (pt, origin left).
+        #[arg(long)]
+        x: f32,
+        /// Y coordinate: in PDF user space (origin bottom, y up) by default,
+        /// or distance from the top edge with --top-left.
+        #[arg(long)]
+        y: f32,
+        /// Take `--y` from the top edge (screenshot/annotation convention)
+        /// and convert: y_user = page_height - y.
+        #[arg(long)]
+        top_left: bool,
+        /// Output: the covering chunk's JSON (default) or just its text.
+        #[arg(short, long, value_enum, default_value_t = LocateFormat::Json)]
+        format: LocateFormat,
+        /// PDF decryption password (encrypted PDFs only).
+        #[arg(long, value_name = "PASSWORD")]
+        password: Option<String>,
     },
     /// Print (or write) the machine-readable output contract: JSON Schema
     /// (draft 2020-12) for every output format, generated from the code.
@@ -1054,10 +1098,21 @@ enum Format {
     /// Document structure tree: nested sections (title/level/page/bbox) for
     /// agentic navigation — list the table of contents, drill into a section (JSON).
     Outline,
+    /// Document metadata report: source, parser, page count, and the
+    /// container's metadata (PDF Info / OOXML core.xml / HTML <meta>) as JSON.
+    Meta,
     /// Open Knowledge Format bundle: a directory of Markdown + YAML-frontmatter
     /// "concept" files mirroring the structure tree (git-native, citable RAG
     /// delivery). Writes a directory (`-o <dir>`, else auto-derived `<stem>-okf/`).
     Okf,
+}
+
+/// Output style for `docparse locate`: the covering chunk's JSON (same shape
+/// as a `-f chunks` element) or just its text.
+#[derive(Clone, Copy, Debug, ValueEnum)]
+enum LocateFormat {
+    Json,
+    Text,
 }
 
 /// Table cell rendering inside `chunks` text.
@@ -1070,7 +1125,7 @@ enum TableFormat {
 }
 
 fn main() -> anyhow::Result<()> {
-    let cli = Cli::parse();
+    let mut cli = Cli::parse();
 
     // Resolve the PDF password from the mutually-exclusive sources
     // (--password / --password-env / --password-file) exactly once; the
@@ -1146,6 +1201,15 @@ fn main() -> anyhow::Result<()> {
                     .with_default_password(default_password),
                 );
             }
+            Command::Locate {
+                file,
+                page,
+                x,
+                y,
+                top_left,
+                format,
+                password,
+            } => return run_locate(file, *page, *x, *y, *top_left, *format, password.clone()),
             Command::FetchModels { tier, dir } => return fetch_models::run(*tier, dir),
             Command::Schema { name, write } => return schema::run(name.as_deref(), *write),
         }
@@ -1158,6 +1222,36 @@ fn main() -> anyhow::Result<()> {
     // end-of-run summary (and --stats wall time) covers parse + every phase.
     let run_start = std::time::Instant::now();
     let reporter = progress::Reporter::new(cli.progress, cli.quiet);
+
+    // Materialize non-file inputs (stdin "-", URLs) into temp files so the
+    // extension-driven backend dispatch sees a normal path. Both shapes are
+    // deliberately single-input: batching a folder mixes local files with a
+    // stream/download, and --out-dir naming needs a real stem.
+    let is_special = |p: &PathBuf| {
+        p.to_str() == Some("-")
+            || p.to_str()
+                .map(|s| s.starts_with("http://") || s.starts_with("https://"))
+                .unwrap_or(false)
+    };
+    let mut temp_input: Option<input_source::TempInput> = None;
+    if cli.inputs.iter().any(is_special) {
+        if cli.inputs.len() != 1 {
+            anyhow::bail!("- (stdin) and URL inputs must be the only input — folder/multi-input batching doesn't apply to them");
+        }
+        if cli.out_dir.is_some() {
+            anyhow::bail!("--out-dir does not apply to - (stdin) or URL inputs");
+        }
+        let spec = cli.input_format;
+        if cli.inputs[0].to_str() == Some("-") {
+            let _g = reporter.spinner("stdin");
+            temp_input = Some(input_source::from_stdin(spec)?);
+        } else {
+            let url = cli.inputs[0].to_str().unwrap_or_default().to_string();
+            let _g = reporter.spinner("download");
+            temp_input = Some(input_source::from_url(&url, spec)?);
+        }
+        cli.inputs[0] = temp_input.as_ref().unwrap().0.clone();
+    }
 
     // Batch when given a folder, several inputs, or an explicit --out-dir;
     // otherwise the classic single-file path (result to stdout or -o).
@@ -1278,6 +1372,13 @@ fn parse_and_enhance(
             password.clone(),
         )?
     };
+
+    // --pages: filter after parsing, before every enhancement — the models
+    // (OCR/layout/UniRec) only ever see the kept pages. Page numbers stay
+    // absolute (see core::pages), so downstream citations are unaffected.
+    if let Some(spec) = &cli.pages {
+        docparse_core::pages::retain_pages_spec(&mut doc, spec)?;
+    }
 
     if let Some(dir) = &cli.image_dir {
         let n = export_images(&mut doc, dir)?;
@@ -1452,6 +1553,39 @@ fn parse_and_enhance(
 
 /// Render a finished document into the requested output format. Shared by the
 /// single-file path and the batch runner.
+/// `docparse locate`: parse → chunk → point lookup, printing the covering
+/// chunk (JSON or text). A miss prints `null` / an empty line and still exits
+/// 0 — a miss is a query result, not an error (same semantics as the MCP
+/// `locate` tool). Deterministic only: no model flags (the enhanced lookup
+/// lives in the MCP face).
+fn run_locate(
+    file: &std::path::Path,
+    page: usize,
+    x: f32,
+    y: f32,
+    top_left: bool,
+    format: LocateFormat,
+    password: Option<String>,
+) -> anyhow::Result<()> {
+    let doc = parse_path_with(file, false, password)?;
+    let page_ref = doc.pages.iter().find(|p| p.number == page).ok_or_else(|| {
+        anyhow::anyhow!("no page {page} (document has {} pages)", doc.pages.len())
+    })?;
+    // --top-left flips the image/screenshot convention into PDF user space.
+    let y_user = if top_left { page_ref.height - y } else { y };
+    let chunks = docparse_core::chunk::chunk_document(&doc);
+    let hit = docparse_core::chunk::locate(&chunks, page, x, y_user);
+    match (format, hit) {
+        (LocateFormat::Json, Some(chunk)) => {
+            println!("{}", serde_json::to_string_pretty(chunk)?)
+        }
+        (LocateFormat::Json, None) => println!("null"),
+        (LocateFormat::Text, Some(chunk)) => println!("{}", chunk.text),
+        (LocateFormat::Text, None) => println!(),
+    }
+    Ok(())
+}
+
 fn render_doc(doc: &docparse_core::ir::Document, cli: &Cli) -> anyhow::Result<String> {
     Ok(match cli.format {
         Format::Json => output::to_json(doc)?,
@@ -1465,6 +1599,7 @@ fn render_doc(doc: &docparse_core::ir::Document, cli: &Cli) -> anyhow::Result<St
             docparse_core::chunk::to_json(&docparse_core::chunk::chunk_document_with(doc, opts))
         }
         Format::Outline => docparse_core::outline::to_json(&docparse_core::outline::build(doc)),
+        Format::Meta => docparse_core::meta::to_json(&docparse_core::meta::report(doc)),
         // OKF writes a directory bundle, never a string — handled out-of-band.
         Format::Okf => unreachable!("okf is written via write_okf_bundle, not render_doc"),
     })
@@ -1698,5 +1833,340 @@ pub(crate) mod test_fixtures {
         let mut bytes = Vec::new();
         doc.save_to(&mut bytes).expect("save fixture");
         bytes
+    }
+}
+
+#[cfg(test)]
+mod pages_tests {
+    use super::*;
+
+    /// Minimal N-page PDF (same fixture style as [`test_fixtures::encrypted_pdf`],
+    /// minus encryption): one Helvetica page per n, content "Page <i>".
+    pub(crate) fn multi_page_pdf(n: usize) -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut doc = Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let mut kids = Vec::new();
+        for i in 1..=n {
+            // Vary y per page: identical text at an identical position on
+            // every page is precisely a "running header" pattern, and the
+            // layout layer would correctly drop it from body output — the
+            // fixture must look like real body text, not a header.
+            let y = 720 - (i as i64 - 1) * 60;
+            let content_id = doc.add_object(Stream::new(
+                dictionary! {},
+                format!("BT /F1 24 Tf 72 {y} Td (Page {i} lorem docparse) Tj ET").into_bytes(),
+            ));
+            let page_id = doc.add_object(dictionary! {
+                "Type" => "Page",
+                "Parent" => pages_id,
+                "Contents" => content_id,
+            });
+            kids.push(page_id.into());
+        }
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => kids,
+                "Count" => Object::Integer(n as i64),
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).expect("save fixture");
+        bytes
+    }
+
+    fn temp_pdf(name: &str, n: usize) -> std::path::PathBuf {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, multi_page_pdf(n)).unwrap();
+        path
+    }
+
+    fn cli_for(args: &[&str]) -> Cli {
+        let mut full = vec!["docparse"];
+        full.extend_from_slice(args);
+        Cli::try_parse_from(full).expect("cli parses")
+    }
+
+    #[test]
+    fn pages_flag_filters_with_absolute_numbering() {
+        let path = temp_pdf("docparse-pages-3.pdf", 3);
+        let models = RunModels::from_cli(&cli_for(&["x.pdf"]));
+        let cli = cli_for(&["x.pdf", "--pages", "2"]);
+
+        let doc = parse_and_enhance(&path, &cli, &models, None, None).expect("parses");
+        assert_eq!(doc.pages.len(), 1, "only the requested page survives");
+        assert_eq!(doc.pages[0].number, 2, "absolute numbering, not remapped");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pages_out_of_range_is_an_error_not_a_truncate() {
+        let path = temp_pdf("docparse-pages-range.pdf", 3);
+        let models = RunModels::from_cli(&cli_for(&["x.pdf"]));
+        let cli = cli_for(&["x.pdf", "--pages", "9"]);
+
+        let err = parse_and_enhance(&path, &cli, &models, None, None)
+            .expect_err("beyond-the-end page must error");
+        assert!(err.to_string().contains("out of range"), "{err}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pages_spec_syntax_errors_surface_from_the_cli_path() {
+        let path = temp_pdf("docparse-pages-syntax.pdf", 3);
+        let models = RunModels::from_cli(&cli_for(&["x.pdf"]));
+        let cli = cli_for(&["x.pdf", "--pages", "3-1"]);
+
+        let err = parse_and_enhance(&path, &cli, &models, None, None).expect_err("bad spec");
+        assert!(err.to_string().contains("starts after it ends"), "{err}");
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn pages_arg_is_visible_in_help() {
+        // The flag must exist on the *main* Cli (agent-facing contract), not
+        // just be tolerated.
+        let err = Cli::try_parse_from(["docparse", "--help"])
+            .err()
+            .expect("help exits");
+        assert!(err.to_string().contains("--pages"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod pages_render_regression {
+    use super::*;
+
+    /// `--pages` must not disturb rendering: the same text comes out of a
+    /// ranged document as from the full one (minus the dropped pages), and a
+    /// well-formed multi-page PDF renders every page's text via `-f text`.
+    #[test]
+    fn pages_filter_keeps_text_rendering_intact() {
+        use docparse_core::output;
+        let path = std::env::temp_dir().join("docparse-pages-render.pdf");
+        std::fs::write(&path, pages_tests::multi_page_pdf(3)).unwrap();
+        let models = RunModels::from_cli(&cli_for_static());
+
+        let mut cli = cli_for_static();
+        let full = parse_and_enhance(&path, &cli, &models, None, None).unwrap();
+        cli.pages = Some("2".into());
+        let ranged = parse_and_enhance(&path, &cli, &models, None, None).unwrap();
+
+        let full_text = output::to_text(&full);
+        assert!(
+            full_text.contains("Page 1"),
+            "multi-page text renders: {full_text:?}"
+        );
+        assert!(full_text.contains("Page 2") && full_text.contains("Page 3"));
+        let ranged_text = output::to_text(&ranged);
+        assert_eq!(
+            ranged_text,
+            output::to_text(&{
+                let mut d = full.clone();
+                d.pages.retain(|p| p.number == 2);
+                d
+            }),
+            "--pages output must equal manually dropping the same pages"
+        );
+        std::fs::remove_file(&path).ok();
+    }
+
+    fn cli_for_static() -> Cli {
+        Cli::try_parse_from(["docparse", "x.pdf"]).expect("cli parses")
+    }
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+    use docparse_core::ir::Metadata;
+
+    /// Minimal 1-page PDF with a populated Info dictionary (same fixture
+    /// style as [`pages_tests`], plus trailer /Info).
+    fn pdf_with_info() -> Vec<u8> {
+        use lopdf::{dictionary, Document, Object, Stream};
+        let mut doc = Document::with_version("1.4");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let resources_id = doc.add_object(dictionary! {
+            "Font" => dictionary! { "F1" => font_id },
+        });
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            b"BT /F1 24 Tf 72 700 Td (Meta fixture) Tj ET".to_vec(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => Object::Integer(1),
+                "Resources" => resources_id,
+                "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        // Real PDFs carry /Info as an *indirect reference* — inline it and the
+        // metadata reader (which resolves the reference, like real files) sees
+        // nothing.
+        // NB: lopdf's `From<&str>` yields a *Name* object — Info strings must
+        // be built with `string_literal` (or `Object::String`) or they come
+        // back as names, not strings.
+        let info_id = doc.add_object(dictionary! {
+            "Title" => Object::string_literal("Quarterly Report"),
+            "Author" => Object::string_literal("Jane Chen"),
+            "CreationDate" => Object::string_literal("D:20260906093000+02'00'"),
+        });
+        doc.trailer.set("Info", info_id);
+        let mut bytes = Vec::new();
+        doc.save_to(&mut bytes).expect("save fixture");
+        bytes
+    }
+
+    fn parse_fixture(bytes: &[u8], name: &str, fmt: Format) -> anyhow::Result<String> {
+        let path = std::env::temp_dir().join(name);
+        std::fs::write(&path, bytes).unwrap();
+        let cli = Cli::try_parse_from(["docparse", "x", "-f", "meta"]).unwrap();
+        let mut cli = cli;
+        cli.format = fmt;
+        let models = RunModels::from_cli(&cli);
+        let doc = parse_and_enhance(&path, &cli, &models, None, None)?;
+        let rendered = render_doc(&doc, &cli)?;
+        std::fs::remove_file(&path).ok();
+        Ok(rendered)
+    }
+
+    #[test]
+    fn pdf_info_flows_into_meta_and_json() {
+        let bytes = pdf_with_info();
+        let meta = parse_fixture(&bytes, "docparse-meta-info.pdf", Format::Meta).unwrap();
+        assert!(meta.contains("\"title\": \"Quarterly Report\""), "{meta}");
+        assert!(meta.contains("\"author\": \"Jane Chen\""), "{meta}");
+        // D:20260906093000+02'00' → 07:30 UTC.
+        assert!(
+            meta.contains("\"created\": \"2026-09-06T07:30:00Z\""),
+            "{meta}"
+        );
+        assert!(meta.contains("\"parser\": \"pdf\""), "{meta}");
+
+        let json = parse_fixture(&bytes, "docparse-meta-info.json.pdf", Format::Json).unwrap();
+        assert!(
+            json.contains("\"metadata\""),
+            "json carries the metadata field"
+        );
+        assert!(json.contains("Quarterly Report"));
+    }
+
+    #[test]
+    fn no_metadata_source_keeps_json_bytes_free_of_the_field() {
+        let csv = b"name,score\nada,99\n";
+        let json = parse_fixture(csv, "docparse-meta-plain.csv", Format::Json).unwrap();
+        assert!(
+            !json.contains("\"metadata\""),
+            "metadata: None must be skipped so legacy consumers see identical bytes"
+        );
+        let meta = parse_fixture(csv, "docparse-meta-plain.meta.csv", Format::Meta).unwrap();
+        assert!(!meta.contains("\"metadata\""), "{meta}");
+        assert!(meta.contains("\"parser\": \"csv\""), "{meta}");
+    }
+
+    #[test]
+    fn meta_schema_is_registered() {
+        let s = docparse_core::schema::by_name("meta").expect("meta schema");
+        assert!(s["properties"].get("metadata").is_some());
+        assert!(s["properties"].get("page_count").is_some());
+    }
+
+    // Silence the unused-import lint when only some fixtures run.
+    #[allow(dead_code)]
+    fn _meta_type_witness(_: Option<Metadata>) {}
+}
+
+#[cfg(test)]
+mod locate_tests {
+    use super::*;
+
+    #[test]
+    fn locate_hits_in_user_space_and_top_left() {
+        let path = std::env::temp_dir().join("docparse-locate.pdf");
+        std::fs::write(&path, pages_tests::multi_page_pdf(3)).unwrap();
+
+        // Page 2's text sits at y=660..684 (fixture varies y per page).
+        // The same physical point expressed in top-left coordinates must hit
+        // the same chunk: 792 - 670 = 122.
+        for (label, args) in [
+            ("user space", vec!["docparse", "locate"]),
+            ("top-left", vec!["docparse", "locate", "--top-left"]),
+        ] {
+            let _ = label;
+            let mut full = args;
+            full.extend([
+                path.to_str().unwrap(),
+                "--page",
+                "2",
+                "--x",
+                "100",
+                "--y",
+                if full.contains(&"--top-left") {
+                    "122"
+                } else {
+                    "670"
+                },
+            ]);
+            let cli = Cli::try_parse_from(&full).expect("cli parses");
+            let Command::Locate {
+                file,
+                page,
+                x,
+                y,
+                top_left,
+                ..
+            } = cli.command.expect("subcommand")
+            else {
+                panic!("expected locate subcommand");
+            };
+            let doc = parse_path_with(&file, false, None).unwrap();
+            let page_ref = doc.pages.iter().find(|p| p.number == page).unwrap();
+            let y_user = if top_left { page_ref.height - y } else { y };
+            let chunks = docparse_core::chunk::chunk_document(&doc);
+            let hit = docparse_core::chunk::locate(&chunks, page, x, y_user)
+                .unwrap_or_else(|| panic!("must hit in {label:?}"));
+            assert!(hit.text.contains("Page 2"), "{hit:?}");
+        }
+        std::fs::remove_file(&path).ok();
+    }
+
+    #[test]
+    fn locate_page_out_of_range_is_an_error() {
+        let path = std::env::temp_dir().join("docparse-locate-range.pdf");
+        std::fs::write(&path, pages_tests::multi_page_pdf(2)).unwrap();
+        let doc = parse_path_with(&path, false, None).unwrap();
+        let missing = doc.pages.iter().find(|p| p.number == 9);
+        assert!(missing.is_none(), "fixture must not have page 9");
+        std::fs::remove_file(&path).ok();
     }
 }

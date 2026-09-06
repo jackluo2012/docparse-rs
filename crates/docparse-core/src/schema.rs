@@ -54,6 +54,11 @@ pub fn all() -> Vec<NamedSchema> {
             schema: schema_for::<crate::outline::Section>(),
         },
         NamedSchema {
+            name: "meta",
+            title: "Document metadata report (-f meta): identity, parser, page count, container metadata.",
+            schema: schema_for::<crate::meta::MetaReport>(),
+        },
+        NamedSchema {
             name: "quality",
             title: "Quality report: coverage, garble ratio, and routing flags.",
             schema: schema_for::<crate::quality::QualityReport>(),
@@ -123,6 +128,7 @@ mod tests {
                 "document",
                 "chunk",
                 "outline",
+                "meta",
                 "quality",
                 "profile",
                 "okf-bundle"

@@ -347,7 +347,7 @@ fn safe_rel(rel: &Path) -> PathBuf {
 /// File extension for a rendered output (chunks are JSON too).
 fn output_ext(format: Format) -> &'static str {
     match format {
-        Format::Json | Format::Chunks | Format::Outline => "json",
+        Format::Json | Format::Chunks | Format::Outline | Format::Meta => "json",
         Format::Markdown => "md",
         Format::Text => "txt",
         Format::Okf => "okf", // unused: OKF writes a directory, handled above

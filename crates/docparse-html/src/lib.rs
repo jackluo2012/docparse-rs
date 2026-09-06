@@ -68,8 +68,62 @@ fn parse_html(html: &str, base: Option<&Path>) -> Document {
             "html",
             env!("CARGO_PKG_VERSION"),
         )),
+        metadata: Some(html_metadata(&dom)),
         pages: b.finish(),
     }
+}
+
+/// `<title>` / `<meta name>` / `<html lang>` → [`Metadata`]. `Some` even when
+/// nothing is found (an empty `Metadata` is still "this format has a metadata
+/// source"); meta fields the page doesn't carry stay `None`.
+fn html_metadata(dom: &Html) -> docparse_core::ir::Metadata {
+    use scraper::node::Node;
+    use std::collections::BTreeMap;
+
+    let mut meta = docparse_core::ir::Metadata::default();
+    // name → slot for the `<meta name=… content=…>` tags we understand.
+    let mut meta_tags: BTreeMap<String, String> = BTreeMap::new();
+
+    for node in dom.tree.nodes() {
+        let Node::Element(el) = node.value() else {
+            continue;
+        };
+        match el.name() {
+            "html" => {
+                if let Some(lang) = el.attr("lang").map(str::trim).filter(|l| !l.is_empty()) {
+                    meta.language = Some(lang.to_string());
+                }
+            }
+            "title" => {
+                // Concatenate the element's text descendants.
+                let mut title = String::new();
+                for desc in node.descendants() {
+                    if let Node::Text(t) = desc.value() {
+                        title.push_str(t);
+                    }
+                }
+                let title = title.trim();
+                if !title.is_empty() {
+                    meta.title = Some(title.to_string());
+                }
+            }
+            "meta" => {
+                let (Some(name), Some(content)) = (
+                    el.attr("name").map(|n| n.to_ascii_lowercase()),
+                    el.attr("content"),
+                ) else {
+                    continue;
+                };
+                meta_tags
+                    .entry(name)
+                    .or_insert_with(|| content.trim().to_string());
+            }
+            _ => {}
+        }
+    }
+    meta.author = meta_tags.get("author").filter(|s| !s.is_empty()).cloned();
+    meta.keywords = meta_tags.get("keywords").filter(|s| !s.is_empty()).cloned();
+    meta
 }
 
 /// Heading font size by tag (body text is 12; larger ⇒ heading downstream).

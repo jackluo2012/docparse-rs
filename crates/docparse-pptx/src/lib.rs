@@ -75,9 +75,20 @@ pub fn parse_bytes(buf: &[u8]) -> anyhow::Result<Document> {
         parse_slide(&xml, &rid_to_path, &media, &mut b);
         b.page_break();
     }
+    let metadata = {
+        let mut xml = String::new();
+        match zip.by_name("docProps/core.xml") {
+            Ok(mut f) => {
+                let _ = f.read_to_string(&mut xml);
+                Some(docparse_core::meta::ooxml_core_metadata(xml.as_bytes()))
+            }
+            Err(_) => None,
+        }
+    };
     Ok(Document {
         source: "<pptx>".to_string(),
         provenance: Some(Provenance::new("pptx", env!("CARGO_PKG_VERSION"))),
+        metadata,
         pages: b.finish(),
     })
 }

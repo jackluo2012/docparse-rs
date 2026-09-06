@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 
 /// Version of this IR schema. Bumped when the serialized shape changes so an
 /// agent consuming the JSON can check compatibility. Semantic versioning.
-pub const SCHEMA_VERSION: &str = "0.8.0";
+pub const SCHEMA_VERSION: &str = "0.9.0";
 
 /// Where a [`Document`] came from: which parser/version produced it, under
 /// which schema. The agent-facing trust/repro anchor (one per document; an
@@ -266,6 +266,40 @@ impl Page {
     }
 }
 
+/// Container-carried document metadata — the PDF Info dictionary, OOXML
+/// `docProps/core.xml`, or HTML `<title>`/`<meta>`, whichever the format has.
+/// Every field is optional: backends fill exactly what the container carries
+/// and never invent values (dates are normalized to ISO 8601; anything
+/// unparsable stays `None`). `None` itself = the format has no metadata
+/// source (CSV/SRT/…) — absent from JSON, so `-f json` bytes stay unchanged
+/// for such documents.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct Metadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keywords: Option<String>,
+    /// The creating application ("Microsoft Word 2019"); PDF `/Creator`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creator: Option<String>,
+    /// The producing converter/library ("docparse-rs", "Ghostscript"); PDF
+    /// `/Producer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub producer: Option<String>,
+    /// ISO 8601 UTC (`2026-09-06T12:34:56Z`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub modified: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub language: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
 pub struct Document {
@@ -275,5 +309,9 @@ pub struct Document {
     /// (pre-provenance) loadable.
     #[serde(default)]
     pub provenance: Option<Provenance>,
+    /// Container metadata, when the format carries any (0.9.0+; see
+    /// [`Metadata`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<Metadata>,
     pub pages: Vec<Page>,
 }
