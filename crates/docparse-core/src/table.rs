@@ -164,6 +164,8 @@ pub fn detect_tables(chunks: &[&TextChunk], segments: &[Segment], page: usize) -
             // Chunks whose center falls in this cell. Reuse line/word
             // reconstruction so per-glyph chunks form words (not "C O N T O")
             // and a multi-line cell keeps its lines in order.
+            let cell_w = (x_right - x_left).max(1.0);
+            let cell_h = (y_top - y_bot).max(1.0);
             let cell_chunks: Vec<&TextChunk> = chunks
                 .iter()
                 .copied()
@@ -171,6 +173,11 @@ pub fn detect_tables(chunks: &[&TextChunk], segments: &[Segment], page: usize) -
                     let cx = (t.bbox.x0 + t.bbox.x1) / 2.0;
                     let cy = t.bbox.cy();
                     cx >= x_left && cx <= x_right && cy >= y_bot && cy <= y_top
+                        // A chunk visibly wider or taller than the cell belongs
+                        // to surrounding prose/figure text whose center merely
+                        // falls inside the grid — exclude it from the cell.
+                        && (t.bbox.x1 - t.bbox.x0) <= cell_w * 1.5
+                        && (t.bbox.y1 - t.bbox.y0) <= cell_h * 2.5
                 })
                 .collect();
             let text = crate::layout::reconstruct_lines(&cell_chunks)
@@ -221,6 +228,41 @@ pub fn detect_tables(chunks: &[&TextChunk], segments: &[Segment], page: usize) -
         rows,
         source: None,
     }]
+}
+
+// ---- post-detection sanitizer ---------------------------------------------
+
+/// A real table is at least two body lines tall; anything shorter is a
+/// figure/equation box whose vector rules happened to form a grid (e.g. a
+/// model-architecture diagram misdetected as a table).
+const MIN_TABLE_H: f32 = 18.0;
+/// A cell longer than this is prose unless the table is generally verbose.
+const CELL_LEN_CAP: usize = 40;
+/// Share of short cells (≤8 chars) above which a long cell counts as prose
+/// leakage rather than a genuinely verbose table.
+const SHORT_CELL_SHARE: f32 = 0.6;
+
+/// Drop table candidates that are too short to hold real rows, and scrub
+/// cells that are anomalously long prose (surrounding text whose center fell
+/// inside the grid). Applied once across all detection paths.
+pub fn sanitize_tables(tables: &mut Vec<Table>) {
+    tables.retain(|t| t.bbox.y1 - t.bbox.y0 >= MIN_TABLE_H);
+    for t in tables.iter_mut() {
+        let total: usize = t.rows.iter().map(Vec::len).sum();
+        let short: usize = t
+            .rows
+            .iter()
+            .flatten()
+            .filter(|c| c.text.trim().chars().count() <= 8)
+            .count();
+        if total > 0 && (short as f32 / total as f32) >= SHORT_CELL_SHARE {
+            for cell in t.rows.iter_mut().flatten() {
+                if cell.text.trim().chars().count() > CELL_LEN_CAP {
+                    cell.text.clear();
+                }
+            }
+        }
+    }
 }
 
 // ---- borderless tables (alignment-based, no ruling lines) ----------------
@@ -585,14 +627,21 @@ fn try_ruled_region(
     if exclude.iter().any(|b| overlaps(&region, b)) {
         return false;
     }
-    // Text strictly inside the ruled band.
+    // Text strictly inside the ruled band: center inside AND no extension
+    // beyond the band's left/right edges (a wide prose line whose center
+    // merely falls inside would otherwise leak into the table).
     let inside: Vec<&TextChunk> = chunks
         .iter()
         .copied()
         .filter(|c| {
             let cy = c.bbox.cy();
             let cx = (c.bbox.x0 + c.bbox.x1) / 2.0;
-            cy > bottom && cy < top && cx >= left - 5.0 && cx <= right + 5.0
+            cy > bottom
+                && cy < top
+                && cx >= left - 5.0
+                && cx <= right + 5.0
+                && c.bbox.x0 >= left - 5.0
+                && c.bbox.x1 <= right + 5.0
         })
         .collect();
     if inside.len() < 4 {
@@ -1081,5 +1130,194 @@ mod tests {
             "Layer Type",
             "Complexity"
         ])));
+    }
+
+    #[test]
+    fn overflowing_prose_chunks_are_excluded_from_cells() {
+        // Same 2x2 grid as the basic test, plus a prose chunk whose center
+        // falls inside the top-left cell but whose width far exceeds the cell
+        // (surrounding paragraph), and a tall chunk (figure label) — neither
+        // may leak into the table.
+        let segs = vec![
+            h(0.0, 0.0, 20.0),
+            h(10.0, 0.0, 20.0),
+            h(20.0, 0.0, 20.0),
+            v(0.0, 0.0, 20.0),
+            v(10.0, 0.0, 20.0),
+            v(20.0, 0.0, 20.0),
+        ];
+        let cs = [
+            chunk("A", 1.0, 11.0, 4.0, 18.0),            // top-left
+            chunk("WIDEPROSE", -20.0, 12.0, 30.0, 18.0), // center inside top-left cell
+            chunk("TALL", 5.0, -10.0, 8.0, 30.0),        // center inside top-left cell
+            chunk("B", 11.0, 11.0, 14.0, 18.0),          // top-right
+            chunk("C", 1.0, 1.0, 4.0, 8.0),              // bottom-left
+            chunk("D", 11.0, 1.0, 14.0, 8.0),            // bottom-right
+        ];
+        let refs: Vec<&TextChunk> = cs.iter().collect();
+        let tables = detect_tables(&refs, &segs, 1);
+        assert_eq!(tables.len(), 1);
+        let t = &tables[0];
+        let flat: String = t
+            .rows
+            .iter()
+            .flatten()
+            .map(|c| c.text.clone() + " ")
+            .collect();
+        assert_eq!(
+            t.rows[0][0].text, "A",
+            "top-left keeps its real cell text: {flat}"
+        );
+        assert!(!flat.contains("WIDEPROSE"), "wide prose excluded: {flat}");
+        assert!(!flat.contains("TALL"), "tall figure label excluded: {flat}");
+    }
+
+    #[test]
+    fn multiword_cell_within_width_kept() {
+        // A legitimately wide cell: the chunk spans the cell width and must
+        // still be collected (no false positive on the width filter).
+        let segs = vec![
+            h(0.0, 0.0, 20.0),
+            h(10.0, 0.0, 20.0),
+            h(20.0, 0.0, 20.0),
+            v(0.0, 0.0, 20.0),
+            v(10.0, 0.0, 20.0),
+            v(20.0, 0.0, 20.0),
+        ];
+        let cs = [
+            chunk("WIDE", 1.0, 11.0, 9.0, 18.0), // nearly full cell width
+            chunk("B", 11.0, 11.0, 14.0, 18.0),
+            chunk("C", 1.0, 1.0, 4.0, 8.0),
+            chunk("D", 11.0, 1.0, 14.0, 8.0),
+        ];
+        let refs: Vec<&TextChunk> = cs.iter().collect();
+        let tables = detect_tables(&refs, &segs, 1);
+        assert_eq!(tables.len(), 1);
+        assert_eq!(
+            tables[0].rows[0][0].text, "WIDE",
+            "near-cell-width text kept"
+        );
+    }
+
+    fn mk_table(y0: f32, y1: f32, cells: Vec<Vec<&str>>) -> Table {
+        Table {
+            bbox: BBox {
+                x0: 0.0,
+                y0,
+                x1: 100.0,
+                y1,
+            },
+            page: 1,
+            rows: cells
+                .into_iter()
+                .map(|r| {
+                    r.into_iter()
+                        .map(|t| Cell {
+                            text: t.into(),
+                            bbox: BBox {
+                                x0: 0.0,
+                                y0,
+                                x1: 50.0,
+                                y1,
+                            },
+                            row_span: 1,
+                            col_span: 1,
+                            merged: false,
+                        })
+                        .collect()
+                })
+                .collect(),
+            source: None,
+        }
+    }
+
+    #[test]
+    fn sanitize_drops_single_line_figure_grid() {
+        // 13pt tall = a formula/architecture diagram misdetected as a table.
+        let mut tables = vec![mk_table(
+            576.0,
+            589.0,
+            vec![
+                vec!["Q", "d", "x", "d"],
+                vec!["model", "", "", ""],
+                vec!["", "i", "i", ""],
+            ],
+        )];
+        sanitize_tables(&mut tables);
+        assert!(tables.is_empty(), "too-short table dropped");
+    }
+
+    #[test]
+    fn sanitize_keeps_real_table() {
+        let mut tables = vec![mk_table(
+            500.0,
+            600.0,
+            vec![
+                vec!["Model", "BLEU"],
+                vec!["base", "27.3"],
+                vec!["big", "28.4"],
+            ],
+        )];
+        sanitize_tables(&mut tables);
+        assert_eq!(tables.len(), 1, "real table kept");
+    }
+
+    #[test]
+    fn sanitize_scrubs_prose_leakage_into_short_table() {
+        let mut tables = vec![mk_table(
+            500.0,
+            600.0,
+            vec![
+                vec!["h1", "h2", "h3"],
+                vec![
+                    "a",
+                    "b",
+                    "Where the projections are parameter matrices W in R k",
+                ],
+                vec!["c", "d", "e"],
+            ],
+        )];
+        sanitize_tables(&mut tables);
+        assert_eq!(tables.len(), 1);
+        let flat: String = tables[0]
+            .rows
+            .iter()
+            .flatten()
+            .map(|c| c.text.clone() + " ")
+            .collect();
+        assert!(
+            !flat.contains("Where the projections"),
+            "long prose scrubbed: {flat}"
+        );
+        assert!(flat.contains("h1"), "short cells kept");
+    }
+
+    #[test]
+    fn sanitize_keeps_verbose_table_untouched() {
+        // Genuinely verbose table (most cells long) — no scrub.
+        let mut tables = vec![mk_table(
+            500.0,
+            600.0,
+            vec![
+                vec!["Model", "BLEU EN-DE EN-FR", "Training Cost (FLOPs)"],
+                vec![
+                    "Transformer (base model) Transformer (big)",
+                    "27.3 28.4 38.1 41.8",
+                    "183.3 x 19 192.3 x 18",
+                ],
+            ],
+        )];
+        sanitize_tables(&mut tables);
+        assert_eq!(tables.len(), 1);
+        let flat: String = tables[0]
+            .rows
+            .iter()
+            .flatten()
+            .map(|c| c.text.clone() + " ")
+            .collect();
+        assert!(
+            flat.contains("Transformer (base model)"),
+            "verbose cell kept: {flat}"
+        );
     }
 }

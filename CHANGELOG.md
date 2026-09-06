@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Table cell sanitation & pseudo-table veto: figure/equation boxes whose
+  vector rules form a grid no longer parse as tables (a table candidate
+  shorter than ~2 text lines is dropped), and surrounding prose whose center
+  merely falls inside a cell no longer leaks into it (cell collection now
+  requires the chunk to fit the cell in width/height, ruled-region collection
+  rejects chunks extending past the band, and a post-detection sanitizer
+  scrubs anomalously long cells in otherwise-short tables). Verified on a real
+  paper: the Transformer-architecture diagram's fake "table" (9×3, 13pt tall)
+  disappears, its leaked prose line returns to the body text, and real tables
+  are untouched.
 - Continued/headerless tables in Markdown & text: a table row that does not
   look like a header (empty cell, or every cell numeric) no longer renders as
   a fake header with a `---` separator — the data rows render bare with an

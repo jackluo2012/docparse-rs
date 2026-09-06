@@ -23,8 +23,11 @@
 use crate::font::FontInfo;
 use crate::images::{FormX, XImage, MAX_FORM_DEPTH};
 use crate::matrix::Matrix;
+use docparse_core::ir::Table;
 use docparse_core::ir::{BBox, Element, ImageChunk, Page, TextChunk};
-use docparse_core::table::{detect_borderless_tables, detect_ruled_tables, detect_tables, Segment};
+use docparse_core::table::{
+    detect_borderless_tables, detect_ruled_tables, detect_tables, sanitize_tables, Segment,
+};
 use docparse_core::table_cluster::detect_cluster_tables;
 use lopdf::content::Content;
 use lopdf::Object;
@@ -193,14 +196,14 @@ pub fn interpret(input: &PageInput) -> Page {
     // Borderless (alignment-based) tables on text not in any detected table.
     let borderless = detect_borderless_tables(&text_refs, &excl);
     drop(text_refs);
-    elements.extend(
-        bordered
-            .into_iter()
-            .chain(ruled)
-            .chain(cluster)
-            .chain(borderless)
-            .map(Element::Table),
-    );
+    let mut tables: Vec<Table> = bordered
+        .into_iter()
+        .chain(ruled)
+        .chain(cluster)
+        .chain(borderless)
+        .collect();
+    docparse_core::table::sanitize_tables(&mut tables);
+    elements.extend(tables.into_iter().map(Element::Table));
 
     Page {
         number: input.number,
