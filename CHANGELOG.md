@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- Continued/headerless tables in Markdown & text: a table row that does not
+  look like a header (empty cell, or every cell numeric) no longer renders as
+  a fake header with a `---` separator — the data rows render bare with an
+  explanatory comment. When such a table follows a same-column-count table,
+  the previous table's header is inherited (`<!-- continued table: header
+  inherited from the previous table -->`, also across pages), so a table split
+  across pages or fragmented by detection keeps its column names. Text output
+  mirrors this with `[continued table]` / `[table without header]` prefixes.
+  New `looks_like_header_row` predicate in `table.rs`; e2e on a real paper
+  shows the Table-3 continuation no longer mislabels `32 / 5.01` as headers.
 - Unified reading order across every output format: tables and images are
   spliced back into the page's reading position instead of being dumped at the
   page bottom. The chunk layer's geometry splice (`follows`: horizontal overlap

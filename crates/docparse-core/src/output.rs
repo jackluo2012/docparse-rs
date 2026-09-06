@@ -42,6 +42,7 @@ fn document_content(doc: &Document) -> Vec<PageContent<'_>> {
 /// Plain text: paragraphs one per line; tables as tab-separated rows.
 pub fn to_text(doc: &Document) -> String {
     let mut s = String::new();
+    let mut prev_header: Option<(usize, Vec<String>)> = None;
     for pc in document_content(doc) {
         for item in &pc.items {
             match item {
@@ -50,6 +51,23 @@ pub fn to_text(doc: &Document) -> String {
                     s.push('\n');
                 }
                 PageItem::Table(t) => {
+                    if crate::table::looks_like_header_row(&t.rows[0]) {
+                        prev_header = Some((
+                            t.rows[0].len(),
+                            t.rows[0]
+                                .iter()
+                                .map(|c| c.text.trim().to_string())
+                                .collect(),
+                        ));
+                    } else if let Some((cols, hdr)) = &prev_header {
+                        if *cols == t.rows[0].len() {
+                            s.push_str(&format!("[continued table] {}\n", hdr.join("\t")));
+                        } else {
+                            s.push_str("[table without header]\n");
+                        }
+                    } else {
+                        s.push_str("[table without header]\n");
+                    }
                     for row in &t.rows {
                         let cells: Vec<&str> = row.iter().map(|c| c.text.trim()).collect();
                         s.push_str(&cells.join("\t"));
@@ -74,6 +92,9 @@ pub fn to_text(doc: &Document) -> String {
 /// tables (first row treated as the header).
 pub fn to_markdown(doc: &Document) -> String {
     let mut md = format!("<!-- source: {} -->\n\n", doc.source);
+    // Last header seen (columns, texts), inherited by continued tables that
+    // have no header row of their own (e.g. a table split across pages).
+    let mut prev_header: Option<(usize, Vec<String>)> = None;
     for pc in document_content(doc) {
         for item in &pc.items {
             match item {
@@ -118,8 +139,46 @@ pub fn to_markdown(doc: &Document) -> String {
                     md.push_str("\n\n");
                 }
                 PageItem::Table(t) => {
-                    md.push_str(&markdown_table(t));
-                    md.push('\n');
+                    if crate::table::looks_like_header_row(&t.rows[0]) {
+                        md.push_str(&markdown_table(t));
+                        md.push('\n');
+                        prev_header = Some((
+                            t.rows[0].len(),
+                            t.rows[0]
+                                .iter()
+                                .map(|c| c.text.trim().to_string())
+                                .collect(),
+                        ));
+                    } else if let Some((cols, hdr)) = &prev_header {
+                        if *cols == t.rows[0].len() {
+                            md.push_str("<!-- continued table: header inherited from the previous table -->\n\n");
+                            let header: Vec<crate::ir::Cell> = hdr
+                                .iter()
+                                .map(|t| crate::ir::Cell {
+                                    text: t.clone(),
+                                    bbox: crate::ir::BBox {
+                                        x0: 0.0,
+                                        y0: 0.0,
+                                        x1: 0.0,
+                                        y1: 0.0,
+                                    },
+                                    row_span: 1,
+                                    col_span: 1,
+                                    merged: false,
+                                })
+                                .collect();
+                            md.push_str(&md_table_with_header(&header, &t.rows));
+                            md.push('\n');
+                        } else {
+                            md.push_str("<!-- continued table without header (column count differs from previous) -->\n\n");
+                            md.push_str(&md_table_datarows(&t.rows));
+                            md.push('\n');
+                        }
+                    } else {
+                        md.push_str("<!-- continued table without header -->\n\n");
+                        md.push_str(&md_table_datarows(&t.rows));
+                        md.push('\n');
+                    }
                 }
                 PageItem::Image(i) => {
                     // Caption (e.g. a VLM description) becomes the image's alt
@@ -145,15 +204,37 @@ pub fn to_markdown(doc: &Document) -> String {
     md
 }
 
-/// Render a table as a GitHub-flavored Markdown pipe table.
+/// Render a table as a GitHub-flavored Markdown pipe table. A row that does
+/// not look like a header (continued/fragmented table) renders as bare data
+/// rows — no fake `---` header line is emitted.
 fn markdown_table(table: &Table) -> String {
-    let mut s = String::new();
     let cols = table.rows.first().map(|r| r.len()).unwrap_or(0);
     if cols == 0 {
-        return s;
+        return String::new();
     }
+    if crate::table::looks_like_header_row(&table.rows[0]) {
+        md_table_with_header(&table.rows[0], &table.rows[1..])
+    } else {
+        md_table_datarows(&table.rows)
+    }
+}
+
+fn md_table_with_header(header: &[crate::ir::Cell], body: &[Vec<crate::ir::Cell>]) -> String {
+    let mut s = String::new();
     let esc = |t: &str| t.replace('|', "\\|").replace('\n', " ");
-    for (r, row) in table.rows.iter().enumerate() {
+    s.push('|');
+    for cell in header {
+        s.push(' ');
+        s.push_str(esc(cell.text.trim()).trim());
+        s.push_str(" |");
+    }
+    s.push('\n');
+    s.push('|');
+    for _ in 0..header.len() {
+        s.push_str(" --- |");
+    }
+    s.push('\n');
+    for row in body {
         s.push('|');
         for cell in row {
             s.push(' ');
@@ -161,13 +242,21 @@ fn markdown_table(table: &Table) -> String {
             s.push_str(" |");
         }
         s.push('\n');
-        if r == 0 {
-            s.push('|');
-            for _ in 0..cols {
-                s.push_str(" --- |");
-            }
-            s.push('\n');
+    }
+    s
+}
+
+fn md_table_datarows(rows: &[Vec<crate::ir::Cell>]) -> String {
+    let mut s = String::new();
+    let esc = |t: &str| t.replace('|', "\\|").replace('\n', " ");
+    for row in rows {
+        s.push('|');
+        for cell in row {
+            s.push(' ');
+            s.push_str(esc(cell.text.trim()).trim());
+            s.push_str(" |");
         }
+        s.push('\n');
     }
     s
 }
@@ -361,5 +450,112 @@ mod tests {
         let a = md.find("First paragraph").unwrap();
         let b = md.find("Second paragraph").unwrap();
         assert!(a < b, "plain text keeps block order: {md}");
+    }
+
+    fn tbl(cells: Vec<Vec<&str>>, y0: f32, y1: f32) -> Element {
+        Element::Table(crate::ir::Table {
+            bbox: BBox {
+                x0: 10.0,
+                y0,
+                x1: 300.0,
+                y1,
+            },
+            page: 1,
+            rows: cells
+                .into_iter()
+                .map(|row| {
+                    row.into_iter()
+                        .map(|t| crate::ir::Cell {
+                            text: t.into(),
+                            bbox: BBox {
+                                x0: 10.0,
+                                y0,
+                                x1: 50.0,
+                                y1,
+                            },
+                            row_span: 1,
+                            col_span: 1,
+                            merged: false,
+                        })
+                        .collect()
+                })
+                .collect(),
+            source: None,
+        })
+    }
+
+    #[test]
+    fn headerless_table_renders_without_fake_header() {
+        let d = doc(vec![tbl(
+            vec![vec!["", "32", "5.01"], vec!["2", "", "6.11"]],
+            400.0,
+            500.0,
+        )]);
+        let md = to_markdown(&d);
+        assert!(!md.contains("| --- |"), "no fake header line: {md}");
+        assert!(
+            md.contains("continued table without header"),
+            "comment present: {md}"
+        );
+        assert!(md.contains("|  | 32 | 5.01 |"), "data row present: {md}");
+        let txt = to_text(&d);
+        assert!(
+            txt.contains("[table without header]"),
+            "text marks table: {txt}"
+        );
+    }
+
+    #[test]
+    fn headerless_table_inherits_previous_header() {
+        // Two adjacent tables, same column count; the second has no header.
+        let d = doc(vec![
+            tbl(
+                vec![vec!["Model", "BLEU"], vec!["base", "27.3"]],
+                500.0,
+                600.0,
+            ),
+            tbl(vec![vec!["2", "6.11"], vec!["4", "5.19"]], 400.0, 450.0),
+        ]);
+        let md = to_markdown(&d);
+        assert!(
+            md.contains("continued table: header inherited"),
+            "inheritance comment: {md}"
+        );
+        assert!(md.contains("| Model | BLEU |"), "inherited header: {md}");
+        assert!(md.contains("| --- | --- |"), "separator after header: {md}");
+        assert!(md.contains("| 2 | 6.11 |"), "continued rows: {md}");
+        let txt = to_text(&d);
+        assert!(
+            txt.contains("[continued table] Model\tBLEU"),
+            "text inheritance: {txt}"
+        );
+    }
+
+    #[test]
+    fn mismatched_columns_do_not_inherit() {
+        let d = doc(vec![
+            tbl(
+                vec![vec!["Model", "BLEU"], vec!["base", "27.3"]],
+                500.0,
+                600.0,
+            ),
+            tbl(
+                vec![vec!["2", "6.11", "x"], vec!["4", "5.19", "y"]],
+                400.0,
+                450.0,
+            ),
+        ]);
+        let md = to_markdown(&d);
+        assert!(
+            md.contains("column count differs"),
+            "mismatch comment: {md}"
+        );
+        // The first table's own header appears exactly once — the second
+        // table does not inherit it.
+        assert_eq!(
+            md.matches("| Model | BLEU |").count(),
+            1,
+            "no inherited header: {md}"
+        );
     }
 }

@@ -24,6 +24,32 @@ const AXIS_EPS: f32 = 1.5; // max deviation to count as horizontal/vertical
 const MIN_LEN: f32 = 8.0; // ignore tiny segments (dots, ticks)
 const SNAP: f32 = 3.0; // cluster ruling coordinates within this many points
 
+/// Whether a row is a usable table header, as opposed to a data row from a
+/// continued/fragmented table. A row is data if any cell is empty or every
+/// non-empty cell is numeric-ish (numbers, units, percents, signs); a header
+/// carries at least one real word (column name).
+pub(crate) fn looks_like_header_row(row: &[Cell]) -> bool {
+    let mut any_word = false;
+    for c in row {
+        let t = c.text.trim();
+        if t.is_empty() {
+            return false;
+        }
+        if !is_numericish(t) {
+            any_word = true;
+        }
+    }
+    any_word
+}
+
+fn is_numericish(t: &str) -> bool {
+    t.chars().all(|c| {
+        c.is_ascii_digit()
+            || c.is_whitespace()
+            || matches!(c, '.' | ',' | '%' | '+' | '-' | '(' | ')' | 'x' | '×' | '/')
+    })
+}
+
 impl Segment {
     fn is_h(&self) -> bool {
         (self.y0 - self.y1).abs() <= AXIS_EPS && (self.x0 - self.x1).abs() > MIN_LEN
@@ -1016,5 +1042,44 @@ mod tests {
             detect_borderless_tables(&refs, &exclude).is_empty(),
             "excluded region not re-detected"
         );
+    }
+
+    #[test]
+    fn header_predicate_distinguishes_data_from_header() {
+        use crate::ir::BBox;
+        use crate::ir::Cell;
+        fn row(cells: Vec<&str>) -> Vec<Cell> {
+            cells
+                .into_iter()
+                .map(|t| Cell {
+                    text: t.into(),
+                    bbox: BBox {
+                        x0: 0.0,
+                        y0: 0.0,
+                        x1: 1.0,
+                        y1: 1.0,
+                    },
+                    row_span: 1,
+                    col_span: 1,
+                    merged: false,
+                })
+                .collect()
+        }
+        // Empty cell => data row (continued table with a blank first cell).
+        assert!(!looks_like_header_row(&row(vec!["", "32", "5.01"])));
+        // All-numeric cells => data row.
+        assert!(!looks_like_header_row(&row(vec!["2", "6.11", "23.7"])));
+        // Numeric-ish with units/signs => data row.
+        assert!(!looks_like_header_row(&row(vec!["-1.5", "201.0", "40.4"])));
+        // A real word => header.
+        assert!(looks_like_header_row(&row(vec![
+            "Model",
+            "BLEU",
+            "Training Cost"
+        ])));
+        assert!(looks_like_header_row(&row(vec![
+            "Layer Type",
+            "Complexity"
+        ])));
     }
 }
