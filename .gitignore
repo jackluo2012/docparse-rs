@@ -14,3 +14,6 @@ replay_pid*.log
 # Cross-project scratch dropped here by other tooling — not part of docparse-rs
 video/
 skills/remotion-best-practices/
+# deploy.sh artifacts
+.run/
+.cache/
