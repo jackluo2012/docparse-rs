@@ -318,7 +318,12 @@ fn build_rows<'a>(chunks: &[&'a TextChunk]) -> Vec<Row<'a>> {
     for &i in &idx {
         let c = chunks[i];
         match groups.last_mut() {
-            Some(g) if (g[0].bbox.cy() - c.bbox.cy()).abs() <= c.font_size.max(1.0) * 0.5 => {
+            // 0.35em (was 0.5em): dense academic tables set data rows at a
+            // pitch of ~4-5pt at 10px, which the 0.5em gate merged into one
+            // Row and then stacked N values into a single cell. True wrapped
+            // fragments inside one logical row sit at <0.35em; the ruled
+            // attempt-A gap bimodality re-joins anything we now split.
+            Some(g) if (g[0].bbox.cy() - c.bbox.cy()).abs() <= c.font_size.max(1.0) * 0.35 => {
                 g.push(c)
             }
             _ => groups.push(vec![c]),
@@ -692,7 +697,29 @@ fn try_ruled_region(
     // Sparse-ruled tables (booktabs: midrule only) fail here on row count and
     // fall through to A.
     if !internal.is_empty() && bands.len() >= 3 {
-        let groups_b: Vec<Vec<usize>> = bands.iter().map(|&(s, e)| (s..e).collect()).collect();
+        // A booktabs band can hold several real rows: the (A) label and its
+        // variant rows share the band between two midrules. Subdivide every
+        // band by baseline-gap bimodality — a true grid (one rule per row)
+        // has uniform pitch and stays singleton, so this never breaks the
+        // gridded case that attempt B exists for.
+        let groups_b: Vec<Vec<usize>> = bands
+            .iter()
+            .enumerate()
+            .flat_map(|(bi, &(s, e))| {
+                if bi == 0 {
+                    // Header band: multi-layer wrapped column labels sit at
+                    // the same pitch as data rows, so subdividing them
+                    // scrambles the header into misaligned rows. Data bands
+                    // below still split into their real variant rows.
+                    vec![(s..e).collect()]
+                } else {
+                    logical_groups(&rows[s..e])
+                        .into_iter()
+                        .map(|g| g.into_iter().map(|i| i + s).collect::<Vec<_>>())
+                        .collect()
+                }
+            })
+            .collect();
         let table = build_grid(&rows, &groups_b, &spans, region, page);
         if is_tabular(&table, true) {
             out.push(table);
@@ -1388,5 +1415,114 @@ mod tests {
     fn is_tabular_dense_band_table_accepted() {
         let t = mk_sparse_table(8, 13, true);
         assert!(is_tabular(&t, true), "dense ruled table accepted");
+    }
+
+    #[test]
+    fn dense_data_rows_stay_separate() {
+        // Four variant rows at 4pt pitch (like booktabs (A) rows): build_rows
+        // must NOT merge them, or build_grid stacks 4 values in one cell.
+        let cs: Vec<TextChunk> = (0..4)
+            .flat_map(|i| {
+                let cy = 100.0 - i as f32 * 4.0;
+                vec![
+                    cc(&format!("v{i}"), 10.0, 18.0, cy),
+                    cc(&format!("w{i}"), 60.0, 70.0, cy),
+                ]
+            })
+            .collect();
+        let refs: Vec<&TextChunk> = cs.iter().collect();
+        let rows = build_rows(&refs);
+        assert_eq!(rows.len(), 4, "dense rows kept separate");
+    }
+
+    #[test]
+    fn tight_wrapped_fragment_still_merges() {
+        // Two fragments of the same logical cell at 2pt pitch still merge.
+        let cs: Vec<TextChunk> = vec![
+            cc("hello", 10.0, 40.0, 100.0),
+            cc("world", 10.0, 45.0, 98.0),
+        ];
+        let refs: Vec<&TextChunk> = cs.iter().collect();
+        let rows = build_rows(&refs);
+        assert_eq!(rows.len(), 1, "wrapped fragment merged");
+    }
+
+    #[test]
+    fn booktabs_band_variant_rows_do_not_stack() {
+        // A booktabs band: label row + 4 variant rows at uniform 11pt pitch.
+        // Subdividing the band by baseline gaps must keep 5 logical rows, and
+        // build_grid must NOT stack all values into one cell.
+        let c1 = chunk("(A)", 10.0, 95.0, 30.0, 105.0);
+        let c2 = chunk("5.29", 60.0, 83.0, 75.0, 93.0);
+        let c3 = chunk("5.00", 60.0, 72.0, 75.0, 82.0);
+        let c4 = chunk("4.91", 60.0, 61.0, 75.0, 71.0);
+        let c5 = chunk("5.01", 60.0, 50.0, 75.0, 60.0);
+        let rows = vec![
+            Row {
+                cy: 100.0,
+                size: 10.0,
+                segs: vec![Seg {
+                    x0: 10.0,
+                    x1: 30.0,
+                    chunks: vec![&c1],
+                }],
+            },
+            Row {
+                cy: 88.0,
+                size: 10.0,
+                segs: vec![Seg {
+                    x0: 60.0,
+                    x1: 75.0,
+                    chunks: vec![&c2],
+                }],
+            },
+            Row {
+                cy: 77.0,
+                size: 10.0,
+                segs: vec![Seg {
+                    x0: 60.0,
+                    x1: 75.0,
+                    chunks: vec![&c3],
+                }],
+            },
+            Row {
+                cy: 66.0,
+                size: 10.0,
+                segs: vec![Seg {
+                    x0: 60.0,
+                    x1: 75.0,
+                    chunks: vec![&c4],
+                }],
+            },
+            Row {
+                cy: 55.0,
+                size: 10.0,
+                segs: vec![Seg {
+                    x0: 60.0,
+                    x1: 75.0,
+                    chunks: vec![&c5],
+                }],
+            },
+        ];
+        let spans = column_spans(&rows);
+        let groups = logical_groups(&rows);
+        assert_eq!(groups.len(), 5, "label + 4 variants stay separate");
+        let t = build_grid(
+            &rows,
+            &groups,
+            &spans,
+            BBox {
+                x0: 0.0,
+                y0: 20.0,
+                x1: 200.0,
+                y1: 120.0,
+            },
+            1,
+        );
+        assert_eq!(t.rows.len(), 5, "no stacking");
+        assert!(
+            t.rows.iter().all(|r| r.iter().all(|c| c.text.len() <= 6)),
+            "each cell holds one value, not \"5.29 5.00 4.91 5.01\""
+        );
     }
 }
