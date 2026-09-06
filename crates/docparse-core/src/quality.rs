@@ -200,10 +200,84 @@ pub fn assess_pages(doc: &Document) -> Vec<PageAssessment> {
     doc.pages.iter().map(assess_page).collect()
 }
 
+/// A page the operator should review before it enters a corpus: the
+/// deterministic parse (and any enhancement already applied) still leaves it
+/// below the quality bar. Serializable for CLI/observability — the CLI's
+/// `--quality-threshold` gates on it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ReviewPage {
+    /// 1-based page number.
+    pub page: usize,
+    /// Visible (non-hidden) characters after all enhancement.
+    pub chars: usize,
+    /// `garbled / chars` in [0,1].
+    pub garbled_ratio: f32,
+    /// Quality flags observed on the page.
+    pub flags: Vec<QualityFlag>,
+    /// Machine-readable reasons this page is listed (see `review_pages`).
+    pub reasons: Vec<String>,
+}
+
+/// The review-gate result for one document.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(feature = "schema", derive(schemars::JsonSchema))]
+pub struct ReviewList {
+    /// The garble gate that was applied.
+    pub garbled_threshold: f32,
+    pub total_pages: usize,
+    /// Pages flagged for review; empty means the document passed the gate.
+    pub review_pages: Vec<ReviewPage>,
+}
+
+/// Flag pages that fall below the quality bar for human review.
+///
+/// A page is listed when any of these hold:
+/// - it has **no text layer** at all (scan-like, or everything painted) —
+///   reason `"no_text_layer"`, regardless of the threshold;
+/// - its **garbled-character ratio exceeds `garbled_threshold`** — reason
+///   `"garbled"`;
+/// - it mixes digital text with a pixel-carrying raster — reason
+///   `"mixed_text_and_scan"` (region-level OCR may recover the raster's text).
+///
+/// Clean digital pages never appear. The result is deterministic and reflects
+/// the post-enhancement state (`--ocr` clears `no_text_layer` on pages it
+/// recovers), so an empty list means the document passed the gate as-is.
+pub fn review_pages(doc: &Document, garbled_threshold: f32) -> ReviewList {
+    let total_pages = doc.pages.len();
+    let mut review_pages = Vec::new();
+    for a in assess_pages(doc) {
+        let mut reasons = Vec::new();
+        if a.flags.contains(&QualityFlag::ScannedNoText) {
+            reasons.push("no_text_layer".to_string());
+        }
+        if a.garbled_ratio > garbled_threshold {
+            reasons.push("garbled".to_string());
+        }
+        if a.flags.contains(&QualityFlag::MixedTextAndScan) {
+            reasons.push("mixed_text_and_scan".to_string());
+        }
+        if !reasons.is_empty() {
+            review_pages.push(ReviewPage {
+                page: a.page,
+                chars: a.chars,
+                garbled_ratio: a.garbled_ratio,
+                flags: a.flags,
+                reasons,
+            });
+        }
+    }
+    ReviewList {
+        garbled_threshold,
+        total_pages,
+        review_pages,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ir::{BBox, Element, Page, TextChunk};
+    use crate::ir::{BBox, Element, ImageChunk, ImageKind, Page, TextChunk};
 
     fn page_with(number: usize, text: &str) -> Page {
         let elements = if text.is_empty() {
@@ -275,6 +349,87 @@ mod tests {
         assert_eq!(r.garbled_chars, 3);
         assert!(r.garbled_ratio > 0.1);
         assert!(r.flags.contains(&QualityFlag::HighGarble));
+    }
+
+    #[test]
+    fn review_gate_passes_clean_digital_docs() {
+        let r = review_pages(
+            &doc(vec![page_with(1, "Hello world"), page_with(2, "More text")]),
+            0.1,
+        );
+        assert!(r.review_pages.is_empty());
+        assert_eq!(r.total_pages, 2);
+    }
+
+    #[test]
+    fn review_gate_lists_no_text_pages_regardless_of_threshold() {
+        let r = review_pages(&doc(vec![page_with(1, "text"), page_with(2, "")]), 0.5);
+        assert_eq!(r.review_pages.len(), 1);
+        assert_eq!(r.review_pages[0].page, 2);
+        assert_eq!(r.review_pages[0].reasons, vec!["no_text_layer"]);
+    }
+
+    #[test]
+    fn review_gate_garble_respects_threshold() {
+        let d = doc(vec![page_with(1, "ok\u{0}\u{1}\u{FFFD}")]);
+        let strict = review_pages(&d, 0.1);
+        assert_eq!(strict.review_pages.len(), 1);
+        assert_eq!(strict.review_pages[0].reasons, vec!["garbled"]);
+        let lax = review_pages(&d, 0.9);
+        assert!(lax.review_pages.is_empty());
+    }
+
+    #[test]
+    fn review_gate_lists_mixed_text_and_scan() {
+        let p = Page {
+            number: 1,
+            width: 100.0,
+            height: 100.0,
+            elements: vec![
+                Element::Text(TextChunk {
+                    text: "digital text".into(),
+                    bbox: BBox {
+                        x0: 0.0,
+                        y0: 0.0,
+                        x1: 10.0,
+                        y1: 10.0,
+                    },
+                    font_size: 10.0,
+                    font: None,
+                    page: 1,
+                    confidence: 1.0,
+                    bold: false,
+                    hidden: false,
+                    source: None,
+                    group: None,
+                    tag: None,
+                }),
+                Element::Image(ImageChunk {
+                    bbox: BBox {
+                        x0: 0.0,
+                        y0: 0.0,
+                        x1: 100.0,
+                        y1: 100.0,
+                    },
+                    page: 1,
+                    width_px: 100,
+                    height_px: 100,
+                    turns: 0,
+                    kind: ImageKind::None,
+                    data: vec![0u8; 4],
+                    file: None,
+                    data_base64: None,
+                    data_media_type: None,
+                    caption: None,
+                    caption_source: None,
+                }),
+            ],
+        };
+        let r = review_pages(&doc(vec![p]), 0.1);
+        assert_eq!(r.review_pages.len(), 1);
+        assert!(r.review_pages[0]
+            .reasons
+            .contains(&"mixed_text_and_scan".to_string()));
     }
 }
 

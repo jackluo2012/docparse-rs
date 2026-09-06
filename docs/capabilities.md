@@ -58,7 +58,7 @@
 **版面/结构**：`--layout`、`--layout-model <path>`（YOLO 默认 / PPV2 自动识别）、`--table-model <dir>`、`--formula-model <dir>`、`--transcribe-model <dir>`。
 **VLM**：`--vlm-describe`、`--vlm-tables`、`--vlm-url`、`--vlm-model`、`--vlm-api-key`。
 **图片**：`--image-dir <dir>`、`--image-embed`。
-**质量/可观测**：`--quality`、`--profile`、`--route-plan`（均出 JSON 到 stderr）、`--progress auto\|always\|never\|json`、`-q/--quiet`、`--stats`。
+**质量/可观测**：`--quality`、`--profile`、`--route-plan`（均出 JSON 到 stderr）、`--quality-threshold <float>`（复核闸门：无文本层页恒列出，乱码率超阈值页列出，JSON 清单到 stderr，入库前人工复核）、`--progress auto\|always\|never\|json`、`-q/--quiet`、`--stats`。
 **子命令**：`mcp`、`serve --port`、`schema [--name N] [--write]`。
 
 ---

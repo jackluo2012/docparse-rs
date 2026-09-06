@@ -94,6 +94,7 @@ docparse doc.pdf  --vlm-tables   --vlm-url URL --vlm-model M # VLM table re-extr
 docparse doc.pdf  --image-dir imgs/ -f chunks               # export images + emit them as RAG image chunks (caption + context, file/bbox)
 docparse doc.pdf  --image-dir imgs/                          # export embedded images (JSON "file" / Markdown ![alt])
 docparse input.pdf --quality --profile --route-plan          # quality / per-page profile / routing (JSON on stderr)
+docparse input.pdf --quality-threshold 0.1        # review gate: pages with no text layer / garble above threshold as JSON, for human review before corpus ingestion
 ```
 </details>
 

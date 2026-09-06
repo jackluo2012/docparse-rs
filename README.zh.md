@@ -87,6 +87,7 @@ docparse doc.pdf  --vlm-describe --vlm-url URL --vlm-model M # 经 OpenAI 兼容
 docparse doc.pdf  --vlm-tables   --vlm-url URL --vlm-model M # VLM 重抽表结构（失败保底确定性网格）
 docparse doc.pdf  --image-dir imgs/                          # 导出嵌入图片（JSON "file" / Markdown ![]()）
 docparse input.pdf --quality --profile --route-plan          # 质量分 / 页级画像 / 路由计划（stderr JSON）
+docparse input.pdf --quality-threshold 0.1        # 复核闸门：无文本层 / 乱码超阈值的页输出 JSON 清单，入库前人工复核
 ```
 </details>
 

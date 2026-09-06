@@ -105,6 +105,14 @@ struct Cli {
     #[arg(long)]
     quality: bool,
 
+    /// Gate pages for human review before corpus ingestion: prints a JSON
+    /// review list (page, chars, garbled ratio, flags, reasons) to stderr.
+    /// A page is listed when it has no text layer, or its garbled-character
+    /// ratio exceeds THRESHOLD (higher = stricter). Optional — without this
+    /// flag no review list is produced and output bytes are unchanged.
+    #[arg(long, value_name = "FLOAT")]
+    quality_threshold: Option<f32>,
+
     /// Print the per-page enhancement routing plan (which pages a model would
     /// be escalated to) as JSON to stderr — demonstrates how few pages are hard.
     #[arg(long)]
@@ -904,6 +912,14 @@ fn main() -> anyhow::Result<()> {
             plan.len(),
             doc.pages.len(),
             docparse_core::enhance::report_json(&plan)
+        );
+    }
+
+    if let Some(t) = cli.quality_threshold {
+        eprintln!(
+            "{}",
+            serde_json::to_string_pretty(&docparse_core::quality::review_pages(&doc, t))
+                .unwrap_or_default()
         );
     }
 

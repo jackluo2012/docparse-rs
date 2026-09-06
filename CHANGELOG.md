@@ -7,6 +7,11 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--quality-threshold <float>` — review gate for corpus ingestion: pages with
+  no text layer, or a garbled-character ratio above the threshold, are listed
+  as JSON on stderr (page / chars / garbled ratio / flags / reasons) for human
+  review before RAG ingestion. Deterministic, model-free, additive — without
+  the flag, output bytes are unchanged.
 - `scripts/fetch-models.sh` — per-tier downloader for the optional neural models
   (`ocr` / `layout` / `unirec` / `ppv2`), pulled from their original Apache-2.0
   repos. Models are never bundled in the repo or binary.
