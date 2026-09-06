@@ -7,6 +7,16 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--password-env <VAR>` / `--password-file <PATH>` — safe password injection
+  for the CLI (`--password` counterpart, mutually exclusive): read the
+  encrypted-PDF password from an environment variable or a secrets file instead
+  of the process list. A missing env var is an error (never silently "no
+  password"); a trailing newline on the file (Docker secrets / `.secret`) is
+  stripped. `serve`/`mcp` gain the same three sources as a **startup default**:
+  REST requests without `?password=` and MCP calls without a `password`
+  argument fall back to it (OpenAPI documents this), and the default still keys
+  the server document cache per-password. Error messages now list all three
+  injection options.
 - `serve`/`mcp --password <PW>` — encrypted-PDF password end-to-end: REST
   `?password=` (documented in OpenAPI, with the localhost/LAN caveat) and an
   optional `password` argument on all five MCP tools. The password is part of

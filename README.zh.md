@@ -90,6 +90,7 @@ docparse doc.pdf  --image-dir imgs/                          # 导出嵌入图�
 docparse input.pdf --quality --profile --route-plan          # 质量分 / 页级画像 / 路由计划（stderr JSON）
 docparse input.pdf --quality-threshold 0.1        # 复核闸门：无文本层 / 乱码超阈值的页输出 JSON 清单，入库前人工复核
 docparse input.pdf --password secret   # 解析加密 PDF（标准安全处理器：RC4 / AES-128 / AES-256）
+docparse input.pdf --password-env PDF_PW   # 或从环境变量 / 密钥文件读取（--password-file <PATH>）——不落 `ps` 进程列表
 ```
 </details>
 

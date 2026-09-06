@@ -51,7 +51,7 @@
 
 定义见 [cli/main.rs](../crates/docparse-cli/src/main.rs) `Cli`（clap）。
 
-**输出/输入**：`-f/--format`、`--table-format tab\|markdown`、`--chunk-target-chars <n>`（RAG 切块目标字符数，默认 800，仅 `-f chunks` 生效，缺省输出字节不变）、`--password <pw>`（加密 PDF，标准安全处理器 RC4/AES-128/AES-256；无密码加载加密 PDF 报明确错误；REST 传 `?password=`、MCP 各工具传 `password` 参数，且密码进入服务端文档缓存签名——不同密码不回放他人条目）、`-o/--out`、位置参数 `inputs`（文件/文件夹/多输入）。
+**输出/输入**：`-f/--format`、`--table-format tab\|markdown`、`--chunk-target-chars <n>`（RAG 切块目标字符数，默认 800，仅 `-f chunks` 生效，缺省输出字节不变）、`--password <pw>` / `--password-env <VAR>` / `--password-file <PATH>`（加密 PDF，标准安全处理器 RC4/AES-128/AES-256；三源互斥：无密码加载加密 PDF 报明确错误、env 未设报错、file 尾部换行剥掉；REST 传 `?password=`、MCP 各工具传 `password` 参数，且密码进入服务端文档缓存签名——不同密码不回放他人条目；`serve`/`mcp` 的三源作启动默认，请求/调用缺省时回落）、`-o/--out`、位置参数 `inputs`（文件/文件夹/多输入）。
 **批量**：`--out-dir`、`-r/--recursive`、`--jobs N`、`--report-json`、`--report-csv`、`--cache-dir <DIR>`（增量缓存：按文件内容 SHA-256 + 输出签名键控，命中直接回放已渲染输出、跳过解析；需 `--out-dir`，不适用 `-f okf`；改内容或换输出参数自然失效重解析）。
 **OKF**：`--okf-resource-base <uri>`、`--okf-tar`、`--force`。
 **OCR**：`--ocr`、`--ocr-models <dir>`（默认 `models/ppocr-v6`，缺则 TTY 确认下载 / `DOCPARSE_OCR_DOWNLOAD=1`）。路由按页进行：有机器可读文本的页面原样通过；缺少可用文本的 PDF 页优先使用已解码的嵌入扫描图像，否则执行该页的完整 PDF 绘制程序、按需渲染为 RGB 后 OCR。这一回退同时覆盖仅有图像位置、没有图像对象，以及用矢量路径绘制文字外观的页面。

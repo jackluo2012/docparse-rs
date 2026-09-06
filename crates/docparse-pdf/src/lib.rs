@@ -163,7 +163,8 @@ fn load_tolerant(bytes: &[u8], password: Option<&str>) -> anyhow::Result<PdfDocu
 fn require_decrypted(doc: PdfDocument) -> anyhow::Result<PdfDocument> {
     if doc.trailer.get(b"Encrypt").is_ok() {
         Err(anyhow::anyhow!(
-            "PDF is encrypted — provide a password with --password"
+            "PDF is encrypted — provide a password with --password, --password-env \
+             VAR, or --password-file PATH"
         ))
     } else {
         Ok(doc)
@@ -175,7 +176,9 @@ fn require_decrypted(doc: PdfDocument) -> anyhow::Result<PdfDocument> {
 fn explain_load_error(err: lopdf::Error) -> anyhow::Error {
     match err {
         lopdf::Error::InvalidPassword => {
-            anyhow::anyhow!("invalid password for encrypted PDF — check --password")
+            anyhow::anyhow!(
+                "invalid password for encrypted PDF — check --password / --password-env / --password-file"
+            )
         }
         other => other.into(),
     }

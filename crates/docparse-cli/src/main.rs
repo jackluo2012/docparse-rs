@@ -65,6 +65,37 @@ pub(crate) fn parse_path_with(
     parser.parse(path)
 }
 
+/// Resolve the PDF password from its three possible sources, in explicit >
+/// file > env priority. Clap already makes the flags mutually exclusive, so
+/// at most one source is ever non-empty; the priority only matters when a
+/// caller passes them programmatically. An explicitly named env var or file
+/// that cannot be read is an error — never a silent "no password".
+pub(crate) fn resolve_password(
+    explicit: Option<String>,
+    env_var: Option<&str>,
+    file: Option<&std::path::Path>,
+) -> anyhow::Result<Option<String>> {
+    if let Some(pw) = explicit {
+        return Ok(Some(pw));
+    }
+    if let Some(path) = file {
+        let raw = std::fs::read_to_string(path)
+            .map_err(|e| anyhow::anyhow!("--password-file {}: {e}", path.display()))?;
+        let trimmed = raw.strip_suffix('\n').unwrap_or(&raw);
+        let trimmed = trimmed.strip_suffix('\r').unwrap_or(trimmed);
+        return Ok(Some(trimmed.to_string()));
+    }
+    if let Some(var) = env_var {
+        return match std::env::var(var) {
+            Ok(v) => Ok(Some(v)),
+            Err(e) => Err(anyhow::anyhow!(
+                "--password-env {var}: cannot read environment variable ({e})"
+            )),
+        };
+    }
+    Ok(None)
+}
+
 #[derive(Parser)]
 #[command(
     name = "docparse",
@@ -125,8 +156,21 @@ struct Cli {
     /// Password for encrypted PDFs (standard security handler: RC4 / AES-128 /
     /// AES-256). Omit for unencrypted files; an encrypted PDF loaded without a
     /// password fails with a clear message.
-    #[arg(long, value_name = "PASSWORD")]
+    #[arg(long, value_name = "PASSWORD", conflicts_with_all = ["password_env", "password_file"])]
     password: Option<String>,
+
+    /// Read the PDF password from environment variable VAR instead of the
+    /// command line — keeps the secret out of the process list / shell
+    /// history / CI logs. Errors if VAR is unset (never silently "no
+    /// password").
+    #[arg(long, value_name = "VAR", conflicts_with_all = ["password", "password_file"])]
+    password_env: Option<String>,
+
+    /// Read the PDF password from FILE (trailing newline stripped) instead of
+    /// the command line — for `.secret` files / Docker secrets. Errors if the
+    /// file is unreadable.
+    #[arg(long, value_name = "PATH", conflicts_with_all = ["password", "password_env"])]
+    password_file: Option<PathBuf>,
 
     /// RAG chunk target size: accumulate consecutive paragraphs up to about
     /// this many characters before emitting a chunk (default 800). Smaller =
@@ -320,6 +364,16 @@ enum Command {
         /// re-parsing — pure acceleration, tool outputs stay byte-identical.
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
+        /// Default PDF password: explicit value used when a tool call does not
+        /// pass `password` (alternative: --password-env / --password-file).
+        #[arg(long, value_name = "PASSWORD", conflicts_with_all = ["password_env", "password_file"])]
+        password: Option<String>,
+        /// Read the default PDF password from environment variable VAR.
+        #[arg(long, value_name = "VAR", conflicts_with_all = ["password", "password_file"])]
+        password_env: Option<String>,
+        /// Read the default PDF password from FILE (trailing newline stripped).
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["password", "password_env"])]
+        password_file: Option<PathBuf>,
     },
     /// Serve a REST API: POST /parse (multipart) + GET /healthz.
     Serve {
@@ -356,6 +410,16 @@ enum Command {
         /// `x-docparse-cache: hit` response header.
         #[arg(long, value_name = "DIR")]
         cache_dir: Option<PathBuf>,
+        /// Default PDF password: explicit value used when a request does not
+        /// pass `?password=` (alternative: --password-env / --password-file).
+        #[arg(long, value_name = "PASSWORD", conflicts_with_all = ["password_env", "password_file"])]
+        password: Option<String>,
+        /// Read the default PDF password from environment variable VAR.
+        #[arg(long, value_name = "VAR", conflicts_with_all = ["password", "password_file"])]
+        password_env: Option<String>,
+        /// Read the default PDF password from FILE (trailing newline stripped).
+        #[arg(long, value_name = "PATH", conflicts_with_all = ["password", "password_env"])]
+        password_file: Option<PathBuf>,
     },
     /// Install the optional neural model tiers (OCR / layout / UniRec) in pure
     /// Rust — no HuggingFace CLI, no Python, no shell scripts. Downloads from
@@ -634,6 +698,12 @@ pub(crate) struct EnhanceState {
     /// repeated parses of the same content + flags replay the stored document
     /// instead of re-running parsing / OCR / layout.
     pub(crate) cache_dir: Option<PathBuf>,
+    /// Default encrypted-PDF password configured at startup
+    /// (`serve`/`mcp --password/--password-env/--password-file`). Used when a
+    /// request / tool call does not pass one explicitly; the *resolved* value
+    /// still flows through the document-cache signature, so per-password
+    /// cache isolation holds for defaults too.
+    pub(crate) default_password: Option<String>,
     unirec: std::sync::OnceLock<Result<std::sync::Arc<docparse_ocr::unirec::UniRec>, String>>,
     layout: std::sync::OnceLock<Result<std::sync::Arc<docparse_ocr::layout::LayoutModel>, String>>,
 }
@@ -651,6 +721,7 @@ impl EnhanceState {
             unirec_dir,
             vlm,
             cache_dir: None,
+            default_password: None,
             unirec: std::sync::OnceLock::new(),
             layout: std::sync::OnceLock::new(),
         }
@@ -660,6 +731,13 @@ impl EnhanceState {
     /// caching). Consumes `self` so callers keep a single expression.
     pub(crate) fn with_cache_dir(mut self, dir: Option<PathBuf>) -> Self {
         self.cache_dir = dir;
+        self
+    }
+
+    /// Attach the startup default PDF password (see `default_password`).
+    /// Consumes `self` so callers keep a single expression.
+    pub(crate) fn with_default_password(mut self, password: Option<String>) -> Self {
+        self.default_password = password;
         self
     }
 
@@ -994,6 +1072,16 @@ enum TableFormat {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Resolve the PDF password from the mutually-exclusive sources
+    // (--password / --password-env / --password-file) exactly once; the
+    // resolved value feeds the single-file path and the batch runner.
+    // Serve/Mcp re-resolve inside their arms to build the server default.
+    let password = resolve_password(
+        cli.password.clone(),
+        cli.password_env.as_deref(),
+        cli.password_file.as_deref(),
+    )?;
+
     // Borrow (not move) the subcommand so the whole `cli` stays available to the
     // file-processing path below — server fields are cheap to clone.
     if let Some(cmd) = &cli.command {
@@ -1006,7 +1094,15 @@ fn main() -> anyhow::Result<()> {
                 vlm_model,
                 vlm_api_key,
                 cache_dir,
+                password,
+                password_env,
+                password_file,
             } => {
+                let default_password = resolve_password(
+                    password.clone(),
+                    password_env.as_deref(),
+                    password_file.as_deref(),
+                )?;
                 return mcp::serve(
                     EnhanceState::new(
                         ocr_models.clone(),
@@ -1014,8 +1110,9 @@ fn main() -> anyhow::Result<()> {
                         unirec_models.clone(),
                         vlm_config(vlm_url.clone(), vlm_model.clone(), vlm_api_key.clone()),
                     )
-                    .with_cache_dir(cache_dir.clone()),
-                )
+                    .with_cache_dir(cache_dir.clone())
+                    .with_default_password(default_password),
+                );
             }
             Command::Serve {
                 host,
@@ -1027,7 +1124,15 @@ fn main() -> anyhow::Result<()> {
                 vlm_model,
                 vlm_api_key,
                 cache_dir,
+                password,
+                password_env,
+                password_file,
             } => {
+                let default_password = resolve_password(
+                    password.clone(),
+                    password_env.as_deref(),
+                    password_file.as_deref(),
+                )?;
                 return server::serve(
                     host,
                     *port,
@@ -1037,8 +1142,9 @@ fn main() -> anyhow::Result<()> {
                         unirec_models.clone(),
                         vlm_config(vlm_url.clone(), vlm_model.clone(), vlm_api_key.clone()),
                     )
-                    .with_cache_dir(cache_dir.clone()),
-                )
+                    .with_cache_dir(cache_dir.clone())
+                    .with_default_password(default_password),
+                );
             }
             Command::FetchModels { tier, dir } => return fetch_models::run(*tier, dir),
             Command::Schema { name, write } => return schema::run(name.as_deref(), *write),
@@ -1057,7 +1163,7 @@ fn main() -> anyhow::Result<()> {
     // otherwise the classic single-file path (result to stdout or -o).
     let single = cli.inputs.len() == 1 && cli.inputs[0].is_file() && cli.out_dir.is_none();
     if !single {
-        batch::run(&cli, &reporter)?;
+        batch::run(&cli, &reporter, password.clone())?;
         if cli.stats {
             resources::report(&reporter, run_start.elapsed());
         }
@@ -1074,7 +1180,7 @@ fn main() -> anyhow::Result<()> {
     let input_bytes = std::fs::metadata(input).map(|m| m.len()).unwrap_or(0);
 
     let models = RunModels::from_cli(&cli);
-    let doc = parse_and_enhance(input, &cli, &models, Some(&reporter))?;
+    let doc = parse_and_enhance(input, &cli, &models, Some(&reporter), password.clone())?;
 
     if cli.quality {
         eprintln!("{}", docparse_core::quality::analyze(&doc).to_json());
@@ -1155,6 +1261,7 @@ fn parse_and_enhance(
     cli: &Cli,
     models: &RunModels,
     reporter: Option<&progress::Reporter>,
+    password: Option<String>,
 ) -> anyhow::Result<docparse_core::ir::Document> {
     let is_pdf = input
         .extension()
@@ -1168,7 +1275,7 @@ fn parse_and_enhance(
         parse_path_with(
             input,
             cli.image_dir.is_some() || cli.image_embed,
-            cli.password.clone(),
+            password.clone(),
         )?
     };
 
@@ -1463,6 +1570,64 @@ fn iso8601_utc(secs: u64) -> String {
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = if m <= 2 { y + 1 } else { y };
     format!("{y:04}-{m:02}-{d:02}T{hh:02}:{mm:02}:{ss:02}Z")
+}
+
+#[cfg(test)]
+mod password_tests {
+    use super::resolve_password;
+
+    #[test]
+    fn explicit_wins_over_file_and_env() {
+        assert_eq!(
+            resolve_password(Some("a".into()), Some("DOCPARSE_UNSET_VAR"), None)
+                .unwrap()
+                .as_deref(),
+            Some("a")
+        );
+    }
+
+    #[test]
+    fn file_strips_trailing_newline() {
+        let dir = std::env::temp_dir().join(format!("docparse-pwfile-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let f = dir.join("secret.txt");
+        std::fs::write(&f, "hunter2\n").unwrap();
+        assert_eq!(
+            resolve_password(None, None, Some(&f)).unwrap().as_deref(),
+            Some("hunter2")
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn env_reads_and_missing_env_is_an_error_not_silent_none() {
+        unsafe {
+            std::env::set_var("DOCPARSE_TEST_PW_22", "envpw");
+        }
+        assert_eq!(
+            resolve_password(None, Some("DOCPARSE_TEST_PW_22"), None)
+                .unwrap()
+                .as_deref(),
+            Some("envpw")
+        );
+        let err = resolve_password(None, Some("DOCPARSE_TEST_UNSET_22"), None).unwrap_err();
+        assert!(
+            format!("{err}").contains("DOCPARSE_TEST_UNSET_22"),
+            "got: {err}"
+        );
+    }
+
+    #[test]
+    fn unreadable_file_is_an_error() {
+        let err =
+            resolve_password(None, None, Some(std::path::Path::new("/nonexistent/x"))).unwrap_err();
+        assert!(format!("{err}").contains("--password-file"), "got: {err}");
+    }
+
+    #[test]
+    fn none_when_no_source_configured() {
+        assert!(resolve_password(None, None, None).unwrap().is_none());
+    }
 }
 
 #[cfg(test)]

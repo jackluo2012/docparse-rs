@@ -61,7 +61,7 @@ impl FileStat {
 }
 
 /// Run the batch: collect files, process each, emit the report(s).
-pub fn run(cli: &Cli, reporter: &Reporter) -> anyhow::Result<()> {
+pub fn run(cli: &Cli, reporter: &Reporter, password: Option<String>) -> anyhow::Result<()> {
     let files = collect_files(&cli.inputs, cli.recursive)?;
     if files.is_empty() {
         anyhow::bail!("no supported files found in the given input(s)");
@@ -119,7 +119,7 @@ pub fn run(cli: &Cli, reporter: &Reporter) -> anyhow::Result<()> {
     // the file bar + report are the UI. A parse failure becomes an error row;
     // the batch never aborts. The bar (thread-safe) ticks as each file lands.
     let process = |inp: &BatchInput| -> FileStat {
-        let stat = process_one(inp, cli, &models, cache_ctx.as_ref());
+        let stat = process_one(inp, cli, &models, cache_ctx.as_ref(), password.clone());
         if let Some(b) = &bar {
             b.inc(1);
         }
@@ -192,6 +192,7 @@ fn process_one(
     cli: &Cli,
     models: &RunModels,
     cache: Option<&CacheCtx>,
+    password: Option<String>,
 ) -> FileStat {
     let bytes = std::fs::metadata(&inp.path).map(|m| m.len()).unwrap_or(0);
     let t = Instant::now();
@@ -230,7 +231,7 @@ fn process_one(
         }
     }
 
-    match parse_and_enhance(&inp.path, cli, models, None) {
+    match parse_and_enhance(&inp.path, cli, models, None, password.clone()) {
         Ok(doc) => {
             let pages = doc.pages.len();
             let write = write_output(cli, &inp.path, &inp.rel, &doc);

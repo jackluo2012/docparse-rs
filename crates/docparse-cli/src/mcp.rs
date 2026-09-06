@@ -469,10 +469,13 @@ fn parse_enhanced(
     state: &crate::EnhanceState,
 ) -> anyhow::Result<docparse_core::ir::Document> {
     let path = std::path::Path::new(str_arg(args, "path")?);
+    // Explicit tool argument wins; otherwise the server's startup default
+    // (--password / --password-env / --password-file) applies.
     let password = args
         .get("password")
         .and_then(Value::as_str)
-        .map(str::to_string);
+        .map(str::to_string)
+        .or_else(|| state.default_password.clone());
     let images_embedded = args.get("images").and_then(Value::as_str) == Some("embedded");
     let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     let opts = crate::EnhanceOpts {
@@ -959,6 +962,27 @@ mod tests {
         let v1: serde_json::Value = serde_json::from_str(&r1).unwrap();
         assert_eq!(v1["result"]["isError"], false);
         assert!(r1.contains("Secret"), "decrypted content must appear");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn default_password_applies_without_tool_argument() {
+        let mut st = state();
+        st.default_password = Some("secret".into());
+        let path = std::env::temp_dir().join("docparse-mcp-encrypted-def.pdf");
+        std::fs::write(&path, crate::test_fixtures::encrypted_pdf("secret")).unwrap();
+
+        let call = req(
+            "tools/call",
+            json!({ "name": "get_chunks", "arguments": { "path": path } }),
+        );
+        let r = handle_line(&call, &st).expect("response");
+        let v: serde_json::Value = serde_json::from_str(&r).unwrap();
+        assert_eq!(
+            v["result"]["isError"], false,
+            "default password must parse: {r}"
+        );
+        assert!(r.contains("Secret"), "decrypted content must appear");
         let _ = std::fs::remove_file(&path);
     }
 }

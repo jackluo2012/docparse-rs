@@ -97,6 +97,7 @@ docparse doc.pdf  --image-dir imgs/                          # export embedded i
 docparse input.pdf --quality --profile --route-plan          # quality / per-page profile / routing (JSON on stderr)
 docparse input.pdf --quality-threshold 0.1        # review gate: pages with no text layer / garble above threshold as JSON, for human review before corpus ingestion
 docparse input.pdf --password secret   # parse encrypted PDFs (standard security handler: RC4 / AES-128 / AES-256)
+docparse input.pdf --password-env PDF_PW   # ... or read it from an env var / a secrets file (--password-file <PATH>) — nothing in `ps`
 ```
 </details>
 
@@ -108,6 +109,7 @@ claude mcp add docparse -- docparse mcp     # MCP tools: parse_document / get_ch
 docparse serve --port 8642                                  # REST: POST /parse + GET /healthz + GET /openapi.json + /schema/{name}
 curl -F "file=@doc.pdf" "http://127.0.0.1:8642/parse?format=chunks&ocr=true"
 curl -F "file=@doc.pdf" "http://127.0.0.1:8642/parse?password=secret"   # encrypted PDF: same --password over the wire (MCP tools take "password" too)
+docparse serve --password-file /run/secrets/pdf_pw   # startup default: requests without ?password= fall back to it (same for `mcp`)
 ```
 
 **Machine-readable contract** — every output format has a JSON Schema (draft 2020-12) generated from the code (one source of truth, golden-tested against drift), so external projects can codegen typed clients instead of reading prose. `docparse schema [--write]` emits them ([`schemas/`](schemas/)); REST serves `GET /openapi.json` + `GET /schema/{name}`; MCP advertises them per-tool and as resources. See [agent integration → §6b](docs/agent-integration.md).

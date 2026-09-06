@@ -159,7 +159,9 @@ fn openapi_doc() -> serde_json::Value {
                                 "schema": { "type": "string" },
                                 "description": "PDF decryption password (encrypted PDFs only). Plain query \
                                                 string — this server is intended for localhost/LAN; do not \
-                                                expose it to untrusted networks." }),
+                                                expose it to untrusted networks. Omitted here, falls back to \
+                                                the server's startup default (--password / --password-env / \
+                                                --password-file)." }),
                         bool_param(
                             "ocr",
                             "OCR pages lacking machine-readable text (needs server --ocr-models).",
@@ -226,8 +228,10 @@ async fn parse(
     // chunks 专用：?table_format=markdown 让表格 chunk 出 GitHub 管道表（默认 tab/换行）。
     let table_markdown = q.get("table_format").map(String::as_str) == Some("markdown");
     // Encrypted-PDF password (plain query string — this server is localhost /
-    // LAN-oriented; see the OpenAPI note).
-    let password = q.get("password").cloned();
+    // LAN-oriented; see the OpenAPI note). Falls back to the server's startup
+    // default (--password / --password-env / --password-file) when the request
+    // doesn't pass one; the resolved value still keys the document cache.
+    let password = request_password(&q, &state);
     let opts = crate::EnhanceOpts {
         ocr: flag("ocr"),
         images_embedded,
@@ -343,6 +347,16 @@ async fn parse(
             &format!("task failed: {e}"),
         ),
     }
+}
+
+/// Resolve the request's PDF password: an explicit `?password=` query wins,
+/// otherwise the server's startup default (`--password` / `--password-env` /
+/// `--password-file`). The resolved value flows through the document-cache
+/// signature, so per-password cache isolation holds for defaults too.
+fn request_password(q: &HashMap<String, String>, state: &crate::EnhanceState) -> Option<String> {
+    q.get("password")
+        .cloned()
+        .or_else(|| state.default_password.clone())
 }
 
 fn err(status: StatusCode, msg: &str) -> Response {
@@ -795,5 +809,35 @@ mod tests {
             "one entry per (content, password) triple"
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn request_password_falls_back_to_server_default_and_query_overrides() {
+        let st = crate::EnhanceState::new(
+            "models/ppocr".into(),
+            "models/layout/doclayout_yolo.onnx".into(),
+            None,
+            None,
+        )
+        .with_default_password(Some("secret".into()));
+
+        // No query password -> the startup default applies.
+        let q = HashMap::new();
+        assert_eq!(request_password(&q, &st).as_deref(), Some("secret"));
+
+        // An explicit query password overrides the default.
+        let q = HashMap::from([("password".to_string(), "querypw".to_string())]);
+        assert_eq!(request_password(&q, &st).as_deref(), Some("querypw"));
+
+        // No default, no query -> None (encrypted PDFs then fail with the
+        // actionable message, verified at the e2e layer).
+        let st2 = crate::EnhanceState::new(
+            "models/ppocr".into(),
+            "models/layout/doclayout_yolo.onnx".into(),
+            None,
+            None,
+        );
+        assert_eq!(request_password(&q, &st2).as_deref(), Some("querypw"));
+        assert_eq!(request_password(&HashMap::new(), &st2), None);
     }
 }
