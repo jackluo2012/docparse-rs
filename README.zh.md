@@ -89,6 +89,7 @@ docparse doc.pdf  --vlm-tables   --vlm-url URL --vlm-model M # VLM 重抽表结�
 docparse doc.pdf  --image-dir imgs/                          # 导出嵌入图片（JSON "file" / Markdown ![]()）
 docparse input.pdf --quality --profile --route-plan          # 质量分 / 页级画像 / 路由计划（stderr JSON）
 docparse input.pdf --quality-threshold 0.1        # 复核闸门：无文本层 / 乱码超阈值的页输出 JSON 清单，入库前人工复核
+docparse input.pdf --password secret   # 解析加密 PDF（标准安全处理器：RC4 / AES-128 / AES-256）
 ```
 </details>
 

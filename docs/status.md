@@ -44,6 +44,8 @@
 
 **Phase 16（chunk 尺寸可调,2026-09-06,已实施）**：`--chunk-target-chars <n>` 暴露既有 `ChunkOptions.target_chars`（默认 800，缺省字节不变）。同节连续段落累积至 n 字符成块；heading/list/code/table 保持原子。1 单测 + e2e（同节 3 段：默认 1 块 635 字符 / `--chunk-target-chars 1` 拆 3 块；显式 800 == 默认逐字节一致）+ clippy 零新增。见 [devlogs/2026-09-06-chunk-target-chars.md](devlogs/2026-09-06-chunk-target-chars.md)。**未做**：跨块 overlap、长段落内部再切分（保持块原子性与四接口字节一致）。
 
+**Phase 17（加密 PDF 支持,2026-09-06,已实施）**：`--password <pw>` 解锁加密 PDF（lopdf 标准安全处理器：RC4 R2-R4 / AES-128 V4 / AES-256 V5-R5/R6）。无密码加载加密 PDF 报明确错误（此前静默解析乱码对象）；密码错误报 "invalid password"；解密输出与明文逐字节一致（空用户密码文档无需传参）。4 单测 + e2e（R2/RC4-40 样例：无密码/错密码/正确密码/空密码四态 + 内容一致性）+ clippy 零新增。见 [devlogs/2026-09-06-encrypted-pdf-password.md](devlogs/2026-09-06-encrypted-pdf-password.md)。**未做**：REST/MCP 参数（签名已预留）。
+
 ## 2. 记分牌（两套互补）
 
 ① **OmniDocBench**（人工真值，模型路径，第一参考）——文本/公式（UniRec）各 ~0.87（论文子集近论文级）、表结构 TEDS_X 0.810（median 0.895，80 表）、套官方公式 Overall ≈75（对标 OpenDoc-0.1B 90.67 / Docling ~80–85 / Marker 78.44）；**短板=学术难表**（端到端 0.52，模型天花板）+ 轻量 `--ocr` mobile（0.42–0.44，用 `--transcribe-model` 提质）。

@@ -33,6 +33,9 @@ pub struct PdfParser {
     /// page-covering scan candidates — set by the image-export path; costs
     /// memory on image-heavy documents, so off by default.
     pub decode_images: bool,
+    /// Password for encrypted PDFs (standard security handler: RC4 / AES-128 /
+    /// AES-256). `None` for unencrypted documents.
+    pub password: Option<String>,
 }
 
 impl DocumentParser for PdfParser {
@@ -51,7 +54,7 @@ impl DocumentParser for PdfParser {
         // Read bytes ourselves so the path and in-memory entries share the same
         // tolerant loader (CNKI/万方 PDFs need a repair pass; see load_tolerant).
         let bytes = std::fs::read(path)?;
-        let mut out = self.parse_document(load_tolerant(&bytes)?)?;
+        let mut out = self.parse_document(load_tolerant(&bytes, self.password.as_deref())?)?;
         out.source = path.display().to_string();
         Ok(out)
     }
@@ -61,7 +64,7 @@ impl PdfParser {
     /// Parse an in-memory PDF (REST uploads, fuzzing) — same pipeline as the
     /// path-based entry, minus the file read.
     pub fn parse_bytes(&self, bytes: &[u8]) -> anyhow::Result<Document> {
-        self.parse_document(load_tolerant(bytes)?)
+        self.parse_document(load_tolerant(bytes, self.password.as_deref())?)
     }
 
     fn parse_document(&self, doc: PdfDocument) -> anyhow::Result<Document> {
@@ -127,11 +130,18 @@ impl PdfParser {
 /// keyword. The spec puts it on the next line, and lopdf's reader rejects the
 /// variant with `InvalidTrailer` (MuPDF/Acrobat tolerate it). We only pay the
 /// repair cost on the error path, so well-formed PDFs are untouched.
-fn load_tolerant(bytes: &[u8]) -> anyhow::Result<PdfDocument> {
-    match PdfDocument::load_mem(bytes) {
-        Ok(doc) => Ok(doc),
+fn load_tolerant(bytes: &[u8], password: Option<&str>) -> anyhow::Result<PdfDocument> {
+    let options = password
+        .filter(|p| !p.is_empty())
+        .map(lopdf::LoadOptions::with_password)
+        .unwrap_or_default();
+    match PdfDocument::load_mem_with_options(bytes, options.clone()) {
+        Ok(doc) => require_decrypted(doc),
         Err(first_err) => match repair_xref_keyword(bytes) {
-            Some(fixed) => PdfDocument::load_mem(&fixed).map_err(|_| first_err.into()),
+            Some(fixed) => match PdfDocument::load_mem_with_options(&fixed, options) {
+                Ok(doc) => require_decrypted(doc),
+                Err(_) => Err(explain_load_error(first_err)),
+            },
             // A complete PDF ends with a `startxref`/`%%EOF` trailer; its absence
             // means the file was cut off (partial download / corrupt). lopdf then
             // reports a cryptic xref error ("invalid start value"), so surface the
@@ -140,8 +150,34 @@ fn load_tolerant(bytes: &[u8]) -> anyhow::Result<PdfDocument> {
                 "PDF appears truncated or incomplete — no trailer/%%EOF found \
                  (partial download or corrupt file); underlying error: {first_err}"
             )),
-            None => Err(first_err.into()),
+            None => Err(explain_load_error(first_err)),
         },
+    }
+}
+
+/// lopdf loads an encrypted PDF *without* a password silently: it returns a
+/// document whose objects are still encrypted (garbage), so a caller would
+/// parse mojibake instead of an error. Successful decryption removes the
+/// `/Encrypt` entry from the trailer, so its presence after load is the
+/// reliable "still encrypted" signal.
+fn require_decrypted(doc: PdfDocument) -> anyhow::Result<PdfDocument> {
+    if doc.trailer.get(b"Encrypt").is_ok() {
+        Err(anyhow::anyhow!(
+            "PDF is encrypted — provide a password with --password"
+        ))
+    } else {
+        Ok(doc)
+    }
+}
+
+/// Map lopdf's terse errors to actionable messages; anything else passes
+/// through unchanged.
+fn explain_load_error(err: lopdf::Error) -> anyhow::Error {
+    match err {
+        lopdf::Error::InvalidPassword => {
+            anyhow::anyhow!("invalid password for encrypted PDF — check --password")
+        }
+        other => other.into(),
     }
 }
 
@@ -291,5 +327,47 @@ mod repair_tests {
         assert!(repair_xref_keyword(b"...\r\nxref\r\n0 67\r\n").is_none());
         // `startxref 123` is not line-leading `xref`+ws+digit at the keyword.
         assert!(repair_xref_keyword(b"startxref\r\n834254\r\n%%EOF").is_none());
+    }
+}
+
+#[cfg(test)]
+mod encryption_tests {
+    use super::*;
+    use lopdf::Object;
+
+    /// A fabricated document whose trailer still carries `/Encrypt` — the state
+    /// lopdf returns when an encrypted PDF is loaded without a password (objects
+    /// stay encrypted; lopdf does not error out).
+    fn doc_still_encrypted() -> PdfDocument {
+        let mut doc = PdfDocument::new();
+        doc.trailer.set(b"Encrypt", Object::Reference((1, 0)));
+        doc
+    }
+
+    #[test]
+    fn encrypted_without_password_is_rejected_with_actionable_message() {
+        let err = require_decrypted(doc_still_encrypted()).unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("--password"), "got: {msg}");
+    }
+
+    #[test]
+    fn decrypted_document_passes_unchanged() {
+        let doc = PdfDocument::new(); // no /Encrypt
+        assert!(require_decrypted(doc).is_ok());
+    }
+
+    #[test]
+    fn invalid_password_error_is_actionable() {
+        let err = explain_load_error(lopdf::Error::InvalidPassword);
+        let msg = format!("{err}");
+        assert!(msg.contains("--password"), "got: {msg}");
+    }
+
+    #[test]
+    fn non_password_errors_pass_through() {
+        // lopdf error types without special handling surface unchanged.
+        let err = explain_load_error(lopdf::Error::PageNumberNotFound(7));
+        assert!(format!("{err}").contains("page number not found"));
     }
 }

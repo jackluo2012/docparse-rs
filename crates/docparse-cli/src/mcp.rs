@@ -455,7 +455,7 @@ fn parse_enhanced(
 ) -> anyhow::Result<docparse_core::ir::Document> {
     let path = std::path::Path::new(str_arg(args, "path")?);
     let images_embedded = args.get("images").and_then(Value::as_str) == Some("embedded");
-    let doc = crate::parse_path_with(path, images_embedded)?;
+    let doc = crate::parse_path_with(path, images_embedded, None)?;
     let flag = |k: &str| args.get(k).and_then(Value::as_bool).unwrap_or(false);
     let opts = crate::EnhanceOpts {
         ocr: flag("ocr"),

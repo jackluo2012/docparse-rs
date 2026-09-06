@@ -96,6 +96,7 @@ docparse doc.pdf  --image-dir imgs/ -f chunks               # export images + em
 docparse doc.pdf  --image-dir imgs/                          # export embedded images (JSON "file" / Markdown ![alt])
 docparse input.pdf --quality --profile --route-plan          # quality / per-page profile / routing (JSON on stderr)
 docparse input.pdf --quality-threshold 0.1        # review gate: pages with no text layer / garble above threshold as JSON, for human review before corpus ingestion
+docparse input.pdf --password secret   # parse encrypted PDFs (standard security handler: RC4 / AES-128 / AES-256)
 ```
 </details>
 

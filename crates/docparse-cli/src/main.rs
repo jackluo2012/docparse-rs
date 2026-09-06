@@ -27,9 +27,15 @@ use std::path::PathBuf;
 /// Parser registry — one line per format backend. Shared by the CLI path, the
 /// MCP server, and the REST server. `decode_images` makes the PDF backend
 /// materialize every embedded image's pixels (the image-export path).
-pub(crate) fn parsers_with(decode_images: bool) -> Vec<Box<dyn DocumentParser>> {
+pub(crate) fn parsers_with(
+    decode_images: bool,
+    password: Option<String>,
+) -> Vec<Box<dyn DocumentParser>> {
     vec![
-        Box::new(PdfParser { decode_images }),
+        Box::new(PdfParser {
+            decode_images,
+            password,
+        }),
         Box::new(DocxParser),
         Box::new(HtmlParser),
         Box::new(XlsxParser),
@@ -48,8 +54,9 @@ pub(crate) fn parsers_with(decode_images: bool) -> Vec<Box<dyn DocumentParser>> 
 pub(crate) fn parse_path_with(
     path: &std::path::Path,
     decode_images: bool,
+    password: Option<String>,
 ) -> anyhow::Result<docparse_core::ir::Document> {
-    let parser = parsers_with(decode_images)
+    let parser = parsers_with(decode_images, password)
         .into_iter()
         .find(|p| p.supports(path))
         .ok_or_else(|| anyhow::anyhow!("no parser supports {}", path.display()))?;
@@ -112,6 +119,12 @@ struct Cli {
     /// flag no review list is produced and output bytes are unchanged.
     #[arg(long, value_name = "FLOAT")]
     quality_threshold: Option<f32>,
+
+    /// Password for encrypted PDFs (standard security handler: RC4 / AES-128 /
+    /// AES-256). Omit for unencrypted files; an encrypted PDF loaded without a
+    /// password fails with a clear message.
+    #[arg(long, value_name = "PASSWORD")]
+    password: Option<String>,
 
     /// RAG chunk target size: accumulate consecutive paragraphs up to about
     /// this many characters before emitting a chunk (default 800). Smaller =
@@ -992,7 +1005,11 @@ fn parse_and_enhance(
 
     let mut doc = {
         let _g = reporter.map(|r| r.spinner("parse"));
-        parse_path_with(input, cli.image_dir.is_some() || cli.image_embed)?
+        parse_path_with(
+            input,
+            cli.image_dir.is_some() || cli.image_embed,
+            cli.password.clone(),
+        )?
     };
 
     if let Some(dir) = &cli.image_dir {

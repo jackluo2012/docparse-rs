@@ -330,7 +330,7 @@ fn render(
     table_markdown: bool,
     state: &crate::EnhanceState,
 ) -> anyhow::Result<(String, &'static str)> {
-    let doc = crate::parse_path_with(path, opts.images_embedded)?;
+    let doc = crate::parse_path_with(path, opts.images_embedded, None)?;
     let mut doc = state.apply(doc, path, opts)?;
     doc.source = source_name.to_string();
     Ok(match format {
@@ -382,7 +382,7 @@ fn render_okf_tar(
     resource_base: String,
     state: &crate::EnhanceState,
 ) -> anyhow::Result<Vec<u8>> {
-    let doc = crate::parse_path_with(path, opts.images_embedded)?;
+    let doc = crate::parse_path_with(path, opts.images_embedded, None)?;
     let mut doc = state.apply(doc, path, opts)?;
     doc.source = source_name.to_string();
     let okf_opts = crate::okf_options_for(path, resource_base, false);
@@ -458,7 +458,7 @@ mod tests {
         // Clients see the uploaded name, never the staging temp path.
         assert!(a.contains("up.html") && !a.contains("docparse-rest-test"));
         // Same rendering the CLI does — lockstep modulo the source name.
-        let mut doc = crate::parse_path_with(&path, false).unwrap();
+        let mut doc = crate::parse_path_with(&path, false, None).unwrap();
         doc.source = "up.html".into();
         assert_eq!(a, output::to_markdown(&doc));
     }

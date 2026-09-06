@@ -7,6 +7,12 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--password <pw>` — parse encrypted PDFs (standard security handler via
+  lopdf: RC4 R2-R4, AES-128 V4, AES-256 V5/R5/R6). Loading an encrypted PDF
+  without a password now fails with an actionable message instead of parsing
+  undecrypted garbage; wrong passwords report "invalid password". Additive:
+  unencrypted files are unaffected and the four interfaces stay byte-identical
+  (MCP/REST still default to no password).
 - `--chunk-target-chars <n>` — wire the existing core chunk-size knob into the
   CLI: consecutive paragraphs accumulate up to `n` chars per RAG chunk (default
   800, byte-identical when omitted). Smaller values yield finer-grained chunks

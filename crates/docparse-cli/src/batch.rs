@@ -247,7 +247,7 @@ fn output_ext(format: Format) -> &'static str {
 /// relative to the input folder so `--out-dir` can mirror sub-dirs. `recursive`
 /// descends into sub-folders.
 fn collect_files(inputs: &[PathBuf], recursive: bool) -> anyhow::Result<Vec<BatchInput>> {
-    let probe = parsers_with(false);
+    let probe = parsers_with(false, None);
     let supported = |p: &Path| probe.iter().any(|parser| parser.supports(p));
     let mut out = Vec::new();
     for input in inputs {
