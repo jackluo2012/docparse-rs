@@ -42,6 +42,8 @@
 
 **Phase 15（质量复核闸门,2026-09-06,已实施）**：RAG 入库前的人工复核闸门——`--quality-threshold <float>`：无文本层页恒列出、乱码率超阈值页列出、数字文本+扫描混排页列出（JSON 到 stderr，原因 `no_text_layer`/`garbled`/`mixed_text_and_scan`）；干净页永不出现，空清单=通过。确定性零模型，反映增强后状态（OCR 恢复页不再列出）；`-f` 全部输出与四接口字节不变。4 单测 + e2e（干净 md→空清单、1×1 png→no_text_layer、stdout cmp 一致）+ clippy 零新增。见 [devlogs/2026-09-06-quality-review-gate.md](devlogs/2026-09-06-quality-review-gate.md)。**未做（诚实）**：批量路径集成、退出码语义（防破既有管线）。
 
+**Phase 16（chunk 尺寸可调,2026-09-06,已实施）**：`--chunk-target-chars <n>` 暴露既有 `ChunkOptions.target_chars`（默认 800，缺省字节不变）。同节连续段落累积至 n 字符成块；heading/list/code/table 保持原子。1 单测 + e2e（同节 3 段：默认 1 块 635 字符 / `--chunk-target-chars 1` 拆 3 块；显式 800 == 默认逐字节一致）+ clippy 零新增。见 [devlogs/2026-09-06-chunk-target-chars.md](devlogs/2026-09-06-chunk-target-chars.md)。**未做**：跨块 overlap、长段落内部再切分（保持块原子性与四接口字节一致）。
+
 ## 2. 记分牌（两套互补）
 
 ① **OmniDocBench**（人工真值，模型路径，第一参考）——文本/公式（UniRec）各 ~0.87（论文子集近论文级）、表结构 TEDS_X 0.810（median 0.895，80 表）、套官方公式 Overall ≈75（对标 OpenDoc-0.1B 90.67 / Docling ~80–85 / Marker 78.44）；**短板=学术难表**（端到端 0.52，模型天花板）+ 轻量 `--ocr` mobile（0.42–0.44，用 `--transcribe-model` 提质）。

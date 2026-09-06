@@ -7,6 +7,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ## [Unreleased]
 
 ### Added
+- `--chunk-target-chars <n>` — wire the existing core chunk-size knob into the
+  CLI: consecutive paragraphs accumulate up to `n` chars per RAG chunk (default
+  800, byte-identical when omitted). Smaller values yield finer-grained chunks
+  for dense vector indexes; headings / lists / code / tables stay atomic.
 - `--quality-threshold <float>` — review gate for corpus ingestion: pages with
   no text layer, or a garbled-character ratio above the threshold, are listed
   as JSON on stderr (page / chars / garbled ratio / flags / reasons) for human

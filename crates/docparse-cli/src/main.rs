@@ -113,6 +113,15 @@ struct Cli {
     #[arg(long, value_name = "FLOAT")]
     quality_threshold: Option<f32>,
 
+    /// RAG chunk target size: accumulate consecutive paragraphs up to about
+    /// this many characters before emitting a chunk (default 800). Smaller =
+    /// finer-grained chunks for dense vector indexes; larger = fewer, longer
+    /// chunks. Individual blocks stay atomic (headings / lists / code / tables
+    /// are never split). Matches the core default, so omitting it keeps output
+    /// bytes unchanged.
+    #[arg(long, value_name = "N", default_value_t = 800)]
+    chunk_target_chars: usize,
+
     /// Print the per-page enhancement routing plan (which pages a model would
     /// be escalated to) as JSON to stderr — demonstrates how few pages are hard.
     #[arg(long)]
@@ -1166,8 +1175,8 @@ fn render_doc(doc: &docparse_core::ir::Document, cli: &Cli) -> anyhow::Result<St
         Format::Text => output::to_text(doc),
         Format::Chunks => {
             let opts = docparse_core::chunk::ChunkOptions {
+                target_chars: cli.chunk_target_chars,
                 table_markdown: matches!(cli.table_format, TableFormat::Markdown),
-                ..Default::default()
             };
             docparse_core::chunk::to_json(&docparse_core::chunk::chunk_document_with(doc, opts))
         }

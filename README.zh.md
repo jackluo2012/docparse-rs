@@ -71,6 +71,7 @@ cargo build --release   # → ./target/release/docparse
 docparse input.pdf -f json       # 完整 IR：provenance + 坐标
 docparse input.pdf -f markdown   # Markdown
 docparse input.pdf -f chunks     # RAG 切块（page + bbox + 面包屑）
+docparse input.pdf -f chunks --chunk-target-chars 400   # 调小切块尺寸适配密集向量索引（默认 800 字符）
 docparse scan.pdf  --ocr         # OCR 无机器可读文本的页面；数字文本页原样通过
 ```
 

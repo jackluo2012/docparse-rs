@@ -74,6 +74,7 @@ All three give you the `docparse` binary. The core needs no models — optional 
 docparse input.pdf -f json       # full IR: provenance + coordinates
 docparse input.pdf -f markdown   # Markdown
 docparse input.pdf -f chunks     # RAG chunks (page + bbox + breadcrumbs + section_id)
+docparse input.pdf -f chunks --chunk-target-chars 400   # tune chunk size for dense vector indexes (default 800)
 docparse input.pdf -f outline    # document structure tree (nested sections, citable)
 docparse input.pdf -f okf        # OKF knowledge bundle → report-okf/ (git-native, --okf-tar for stdout)
 docparse ./papers --out-dir out/ --jobs 8   # batch a folder (file-level parallelism for digital docs)

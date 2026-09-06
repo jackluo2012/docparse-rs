@@ -984,4 +984,41 @@ mod tests {
             assert_eq!(c.id, i);
         }
     }
+
+    #[test]
+    fn target_chars_controls_paragraph_accumulation() {
+        // Three paragraphs on one page. Default (800) folds them into one
+        // chunk; a tiny target keeps each paragraph as its own chunk.
+        let d = doc(vec![
+            text_el("First paragraph of the document.", 10.0, 660.0, 1),
+            text_el("Second paragraph keeps going here.", 10.0, 630.0, 1),
+            text_el("Third paragraph closes the page.", 10.0, 600.0, 1),
+        ]);
+        let merged = chunk_document_with(
+            &d,
+            ChunkOptions {
+                target_chars: 800,
+                ..Default::default()
+            },
+        );
+        let paras: Vec<&Chunk> = merged
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Paragraph)
+            .collect();
+        assert_eq!(paras.len(), 1, "default target merges paragraphs");
+        assert!(paras[0].text.contains("Third paragraph"));
+
+        let split = chunk_document_with(
+            &d,
+            ChunkOptions {
+                target_chars: 1,
+                ..Default::default()
+            },
+        );
+        let paras2: Vec<&Chunk> = split
+            .iter()
+            .filter(|c| c.kind == ChunkKind::Paragraph)
+            .collect();
+        assert_eq!(paras2.len(), 3, "tiny target keeps paragraphs separate");
+    }
 }
