@@ -25,7 +25,7 @@ docparse-cli                 ← 聚合：CLI / MCP / REST / 批量；模型装�
 | **docparse-core** | IR 定义、阅读顺序、行词重建、输出序列化、RAG chunk、结构树、OKF、增强边界、质量评分、JSON Schema 生成 | serde, rayon, encoding_rs, chardetng, libc, schemars(opt) |
 | **docparse-pdf** | 纯 Rust PDF：lopdf 解 COS + 自研内容流解释器 + 字体层（CMap/AFM/Encoding） | docparse-core, lopdf, hayro-ccitt/jbig2/jpeg2000 |
 | **docparse-docx** | DOCX（docx-rs）→ 合成页；段落样式定标题、`w:numPr` 列表、`w:drawing` 图片 | docparse-core, docx-rs |
-| **docparse-html** | HTML/XHTML（scraper/html5ever）；`<img>`（data:/相对路径）抽图、alt 作图说 | docparse-core, scraper, base64 |
+| **docparse-html** | HTML/XHTML（scraper/html5ever）；**正文抽取**（站点规则 `#js_content`/`article`/`main`… + Readability 式打分兜底，不自信回退全页；平台模板行过滤）；`<img>`（data:/相对路径）抽图、alt 作图说；`<br>` 作段内换行 | docparse-core, scraper, base64, regex |
 | **docparse-xlsx** | Excel（calamine）；每 sheet 一页，单元格→表 | docparse-core, calamine |
 | **docparse-pptx** | PPTX（quick-xml + zip）；每 slide 一页；`p:pic` 经 rels 抽图 | docparse-core, quick-xml, zip |
 | **docparse-md** | Markdown（pulldown-cmark） | docparse-core, pulldown-cmark |
