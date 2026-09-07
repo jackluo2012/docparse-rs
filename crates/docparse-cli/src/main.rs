@@ -134,6 +134,12 @@ struct Cli {
     #[arg(long, value_enum)]
     input_format: Option<input_source::InputFormat>,
 
+    /// Request header for URL inputs, "NAME: VALUE" — repeatable (e.g. an
+    /// Authorization bearer for a gated download). No effect on file/stdin
+    /// inputs.
+    #[arg(long, value_name = "NAME: VALUE")]
+    header: Vec<String>,
+
     /// Table rendering inside `-f chunks` text (tab=default, markdown=pipe table).
     #[arg(long, value_enum, default_value_t = TableFormat::Tab)]
     table_format: TableFormat,
@@ -715,6 +721,9 @@ pub(crate) struct EnhanceOpts {
     pub layout: bool,
     pub table_model: bool,
     pub formula_model: bool,
+    /// Whole-page re-recognition with UniRec (the serving counterpart of
+    /// --transcribe-model; PDF only).
+    pub transcribe_model: bool,
     pub vlm_describe: bool,
     pub vlm_tables: bool,
 }
@@ -724,6 +733,7 @@ impl EnhanceOpts {
         self.layout
             || self.table_model
             || self.formula_model
+            || self.transcribe_model
             || self.vlm_describe
             || self.vlm_tables
     }
@@ -809,8 +819,8 @@ impl EnhanceState {
         );
         let _ = write!(
             s,
-            ";table_model={};formula_model={}",
-            opts.table_model, opts.formula_model
+            ";table_model={};formula_model={};transcribe_model={}",
+            opts.table_model, opts.formula_model, opts.transcribe_model
         );
         if let Some(d) = &self.unirec_dir {
             let _ = write!(s, ";unirec={}", d.display());
@@ -897,6 +907,16 @@ impl EnhanceState {
             let layout = self.loaded_layout()?;
             let model = self.unirec()?;
             docparse_ocr::formula::enhance_formulas(
+                &mut doc,
+                std::fs::read(path)?,
+                &layout,
+                &model,
+            )?;
+        }
+        if o.transcribe_model {
+            let layout = self.loaded_layout()?;
+            let model = self.unirec()?;
+            docparse_ocr::transcribe::transcribe_pages(
                 &mut doc,
                 std::fs::read(path)?,
                 &layout,
@@ -1243,6 +1263,7 @@ fn main() -> anyhow::Result<()> {
             anyhow::bail!("--out-dir does not apply to - (stdin) or URL inputs");
         }
         let spec = cli.input_format;
+        let headers = input_source::parse_header_args(&cli.header)?;
         // The guard keeps the materialized temp file alive until end of run.
         let t = if cli.inputs[0].to_str() == Some("-") {
             let _g = reporter.spinner("stdin");
@@ -1250,7 +1271,7 @@ fn main() -> anyhow::Result<()> {
         } else {
             let url = cli.inputs[0].to_str().unwrap_or_default().to_string();
             let _g = reporter.spinner("download");
-            input_source::from_url(&url, spec)?
+            input_source::from_url(&url, spec, &headers)?
         };
         cli.inputs[0] = t.0.clone();
         Some(t)

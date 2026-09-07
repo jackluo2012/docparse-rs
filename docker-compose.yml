@@ -1,0 +1,30 @@
+# docparse-rs 全功能 REST 服务（一键）：
+#   docker compose up -d --build          # 构建（烘焙全量模型）+ 起服务
+#   curl -F "file=@doc.pdf" "http://127.0.0.1:8642/parse?format=chunks&ocr=true"
+# 模型烘焙进镜像（~800MB）；也可 DOCKER_BAKE_MODELS=1 scripts/deploy.sh docker
+# 或在此文件里把 build.args.INSTALL_MODELS 改 0 并挂载 ./models:/app/models:ro。
+services:
+  docparse:
+    build:
+      context: .
+      args:
+        REGISTRY: ""
+        INSTALL_MODELS: "1"
+    ports:
+      - "8642:8642"          # 无鉴权——仅在本机/可信网段发布
+    volumes:
+      - docparse-cache:/app/cache
+    environment:
+      # 可选：OpenAI 兼容视觉服务（图说/表重抽）。留空则不带 VLM 能力。
+      VLM_URL: ""
+      VLM_MODEL: ""
+      # VLM_API_KEY: ""
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8642/healthz"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  docparse-cache:

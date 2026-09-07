@@ -177,6 +177,7 @@ fn openapi_doc() -> serde_json::Value {
                         bool_param("layout", "Layout-model reading order (PDF only; needs --layout-model)."),
                         bool_param("table_model", "UniRec table structure (needs --unirec-models)."),
                         bool_param("formula_model", "Display formulas to LaTeX (needs --unirec-models)."),
+                        bool_param("transcribe_model", "Whole-page UniRec re-recognition for hard/CJK layouts (PDF only; needs --unirec-models)."),
                         bool_param("vlm_describe", "VLM figure captions (needs --vlm-url/--vlm-model)."),
                         bool_param("vlm_tables", "VLM table re-extraction.")
                     ],
@@ -257,6 +258,7 @@ async fn parse(
         layout: flag("layout"),
         table_model: flag("table_model"),
         formula_model: flag("formula_model"),
+        transcribe_model: flag("transcribe_model"),
         vlm_describe: flag("vlm_describe"),
         vlm_tables: flag("vlm_tables"),
     };

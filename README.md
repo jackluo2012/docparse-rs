@@ -63,7 +63,8 @@ cargo install --git https://github.com/yzlabai/docparse-rs docparse-cli
 
 ```bash
 git clone https://github.com/yzlabai/docparse-rs && cd docparse-rs
-cargo build --release   # → ./target/release/docparse
+scripts/deploy.sh daemon   # one shot: build + fetch models (OCR/YOLO/UniRec) + serve everything
+scripts/deploy.sh docker   # or the Docker one-shot (bakes all models by default)
 ```
 
 All three give you the `docparse` binary. The core needs no models — optional tiers are fetched on demand ([Optional models](#-optional-models)).

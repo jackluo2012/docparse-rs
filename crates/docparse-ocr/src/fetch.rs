@@ -23,6 +23,11 @@ pub struct FileSpec {
     pub repo: &'static str,
     pub glob: &'static str,
     pub dest: &'static str,
+    /// Direct download URL that bypasses the HF tree lookup. Needed when the
+    /// file has no home on HuggingFace any more — the v4 dictionary was
+    /// deleted from SWHL/RapidOCR and lives in the upstream PaddleOCR repo
+    /// (GitHub) instead. `Some` makes `repo`/`glob` informational only.
+    pub url: Option<&'static str>,
 }
 
 /// The optional neural model tiers `fetch-models` knows how to install.
@@ -71,21 +76,27 @@ impl Tier {
                     repo: "SWHL/RapidOCR",
                     glob: "**/ch_PP-OCRv4_det_infer.onnx",
                     dest: "ch_PP-OCRv4_det_infer.onnx",
+                    url: None,
                 },
                 FileSpec {
                     repo: "SWHL/RapidOCR",
                     glob: "**/ch_PP-OCRv4_rec_infer.onnx",
                     dest: "ch_PP-OCRv4_rec_infer.onnx",
+                    url: None,
                 },
                 FileSpec {
                     repo: "SWHL/RapidOCR",
                     glob: "**/ch_ppocr_mobile_v2.0_cls_infer.onnx",
                     dest: "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+                    url: None,
                 },
                 FileSpec {
                     repo: "SWHL/RapidOCR",
+                    // Deleted from SWHL/RapidOCR; the upstream PaddleOCR
+                    // repo (GitHub) is the file's real home.
                     glob: "**/ppocr_keys_v1.txt",
                     dest: "ppocr_keys_v1.txt",
+                    url: Some("https://raw.githubusercontent.com/PaddlePaddle/PaddleOCR/main/ppocr/utils/ppocr_keys_v1.txt"),
                 },
             ],
             Tier::Ppv6 => &[
@@ -93,33 +104,39 @@ impl Tier {
                     repo: "PaddlePaddle/PP-OCRv6_tiny_det_onnx",
                     glob: "**/inference.onnx",
                     dest: "PP-OCRv6_tiny_det.onnx",
+                    url: None,
                 },
                 FileSpec {
                     repo: "PaddlePaddle/PP-OCRv6_tiny_rec_onnx",
                     glob: "**/inference.onnx",
                     dest: "PP-OCRv6_tiny_rec.onnx",
+                    url: None,
                 },
                 FileSpec {
                     repo: "PaddlePaddle/PP-OCRv6_tiny_rec_onnx",
                     glob: "**/inference.yml",
                     dest: "PP-OCRv6_tiny_rec.yml",
+                    url: None,
                 },
                 // v6 ships no new orientation classifier — reuse v4's.
                 FileSpec {
                     repo: "SWHL/RapidOCR",
                     glob: "**/ch_ppocr_mobile_v2.0_cls_infer.onnx",
                     dest: "ch_ppocr_mobile_v2.0_cls_infer.onnx",
+                    url: None,
                 },
             ],
             Tier::Layout => &[FileSpec {
                 repo: "wybxc/DocLayout-YOLO-DocStructBench-onnx",
                 glob: "**/*.onnx",
                 dest: "doclayout_yolo.onnx",
+                url: None,
             }],
             Tier::Ppv2 => &[FileSpec {
                 repo: "topdu/PP_DoclayoutV2_onnx",
                 glob: "**/PP-DoclayoutV2.onnx",
                 dest: "PP-DoclayoutV2.onnx",
+                url: None,
             }],
             // Whole-repo tier — every file, repo-relative paths preserved.
             Tier::Unirec => return None,
@@ -170,11 +187,16 @@ pub fn fetch_tier(tier: Tier, dir: &Path, mut progress: impl FnMut(&str)) -> Res
     let files = tier.files().expect("non-repo tier has file specs");
     for spec in files {
         progress(spec.dest);
-        let remote = find_in_repo(&agent, spec.repo, spec.glob)?;
-        let url = format!(
-            "https://huggingface.co/{}/resolve/main/{}",
-            spec.repo, remote
-        );
+        let url = match spec.url {
+            Some(u) => u.to_string(),
+            None => {
+                let remote = find_in_repo(&agent, spec.repo, spec.glob)?;
+                format!(
+                    "https://huggingface.co/{}/resolve/main/{}",
+                    spec.repo, remote
+                )
+            }
+        };
         let dest = dir.join(spec.dest);
         let tmp = dest.with_file_name(format!(".{}.partial", spec.dest));
         download_one(&agent, &url, spec.dest, &tmp)
@@ -187,6 +209,11 @@ pub fn fetch_tier(tier: Tier, dir: &Path, mut progress: impl FnMut(&str)) -> Res
 /// Install a whole repo (`Tier::Unirec`): every file, repo-relative path
 /// preserved, so the loader's substring+ext lookup works on the original
 /// names.
+/// Whole-repo tiers download this many files concurrently: HF throttles per
+/// connection (measured ~5-7 MB/min each), so 3 parallel streams ≈ 3× on the
+/// ~700 MB UniRec tier without hammering the CDN.
+const PARALLEL_DOWNLOADS: usize = 3;
+
 fn fetch_repo(
     agent: &ureq::Agent,
     repo: &str,
@@ -194,19 +221,62 @@ fn fetch_repo(
     progress: &mut impl FnMut(&str),
 ) -> Result<()> {
     let files = list_repo_files(agent, repo)?;
-    for (path, _size) in files {
-        progress(&path);
-        let url = format!("https://huggingface.co/{repo}/resolve/main/{path}");
-        let dest = dir.join(&path);
-        let tmp = dest.with_file_name(format!(".{}.partial", path.replace('/', "__")));
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)
-                .with_context(|| format!("create {}", parent.display()))?;
-        }
-        download_one(agent, &url, &path, &tmp).with_context(|| format!("download {path}"))?;
-        std::fs::rename(&tmp, &dest).with_context(|| format!("install {}", dest.display()))?;
+    // Announce every file up front — `progress` stays on the calling thread;
+    // the actual downloads run `PARALLEL_DOWNLOADS`-wide below and only their
+    // failures come back.
+    for (path, _size) in &files {
+        progress(path);
     }
-    Ok(())
+    let next = std::sync::atomic::AtomicUsize::new(0);
+    let failures: std::sync::Mutex<Vec<String>> = std::sync::Mutex::new(Vec::new());
+    std::thread::scope(|scope| {
+        let workers = PARALLEL_DOWNLOADS.min(files.len()).max(1);
+        for _ in 0..workers {
+            scope.spawn(|| loop {
+                let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                let Some((path, _size)) = files.get(i) else {
+                    break;
+                };
+                let url = format!("https://huggingface.co/{repo}/resolve/main/{path}");
+                let dest = dir.join(path);
+                let tmp = dest.with_file_name(format!(".{}.partial", path.replace('/', "__")));
+                if let Some(parent) = dest.parent() {
+                    if let Err(e) = std::fs::create_dir_all(parent) {
+                        failures
+                            .lock()
+                            .unwrap()
+                            .push(format!("{path}: create {}: {e}", parent.display()));
+                        continue;
+                    }
+                }
+                match download_one(agent, &url, path, &tmp) {
+                    Ok(()) => {
+                        if let Err(e) = std::fs::rename(&tmp, &dest) {
+                            failures
+                                .lock()
+                                .unwrap()
+                                .push(format!("{path}: install {}: {e}", dest.display()));
+                        }
+                    }
+                    Err(e) => failures.lock().unwrap().push(format!("{path}: {e:#}")),
+                }
+            });
+        }
+    });
+    let failures = failures.into_inner().unwrap();
+    if failures.is_empty() {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "{} file(s) failed:
+  {}",
+            failures.len(),
+            failures.join(
+                "
+  "
+            )
+        )
+    }
 }
 
 /// List every file path in `repo` (recursive) via the HF tree API, with sizes.
@@ -310,27 +380,13 @@ fn agent() -> ureq::Agent {
 fn download_one(agent: &ureq::Agent, url: &str, name: &str, tmp: &Path) -> Result<()> {
     let mut last_err = None;
     for attempt in 1..=3 {
-        let result = (|| -> Result<u64> {
-            let resp = agent
-                .get(url)
-                .call()
-                .with_context(|| format!("GET {url}"))?;
-            let mut file =
-                std::fs::File::create(tmp).with_context(|| format!("create {}", tmp.display()))?;
-            let n = std::io::copy(&mut resp.into_reader(), &mut file)?;
-            // A "too small" file is only a failure when it's an un-dereferenced
-            // git-LFS *pointer* (the source moved / LFS broke) — a tiny real
-            // file (a 31-byte README.md, say) is legitimate content. Whole-repo
-            // tiers must not die on their own metadata files.
-            if n <= 1024 && looks_like_lfs_pointer(tmp) {
-                anyhow::bail!("{name} is a git-LFS pointer ({n} bytes) — source moved?");
-            }
-            Ok(n)
-        })();
+        let result = download_attempt(agent, url, name, tmp);
         match result {
             Ok(_) => return Ok(()),
             Err(e) => {
-                let _ = std::fs::remove_file(tmp);
+                // Keep the .partial on mid-stream failures: the next attempt
+                // (or the next deploy.sh run — interrupted big models were the
+                // old pain) resumes from it via a Range request.
                 last_err = Some(e);
                 if attempt < 3 {
                     std::thread::sleep(std::time::Duration::from_millis(500 * attempt));
@@ -339,6 +395,45 @@ fn download_one(agent: &ureq::Agent, url: &str, name: &str, tmp: &Path) -> Resul
         }
     }
     Err(last_err.unwrap()).context("3 attempts failed")
+}
+
+/// One GET that resumes where a previous `.partial` left off: an existing
+/// partial triggers a `Range:` request; a `206` appends, anything else (200 =
+/// server ignored the range, 4xx/5xx bubbles as the error) restarts cleanly.
+fn download_attempt(agent: &ureq::Agent, url: &str, name: &str, tmp: &Path) -> Result<u64> {
+    let already = std::fs::metadata(tmp).map(|m| m.len()).unwrap_or(0);
+    let mut req = agent.get(url);
+    let mut resume = false;
+    if already > 0 {
+        req = agent.get(url).set("Range", &format!("bytes={already}-"));
+        resume = true;
+    }
+    let resp = req.call().with_context(|| format!("GET {url}"))?;
+    let status = resp.status();
+    let (mut file, base) = if resume && status == 206 {
+        (
+            std::fs::OpenOptions::new()
+                .append(true)
+                .open(tmp)
+                .with_context(|| format!("append {}", tmp.display()))?,
+            already,
+        )
+    } else {
+        (
+            std::fs::File::create(tmp).with_context(|| format!("create {}", tmp.display()))?,
+            0,
+        )
+    };
+    let n = std::io::copy(&mut resp.into_reader(), &mut file)?;
+    let total = base + n;
+    // A "too small" file is only a failure when it's an un-dereferenced
+    // git-LFS *pointer* (the source moved / LFS broke) — a tiny real file (a
+    // 31-byte README.md, say) is legitimate content. Whole-repo tiers must
+    // not die on their own metadata files.
+    if total <= 1024 && looks_like_lfs_pointer(tmp) {
+        anyhow::bail!("{name} is a git-LFS pointer ({total} bytes) — source moved?");
+    }
+    Ok(total)
 }
 
 /// True when the first bytes of `path` are the standard git-LFS pointer
@@ -366,11 +461,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         let ptr = d.join("ptr");
-        std::fs::write(&ptr, b"version https://git-lfs.github.com/spec/v1\noid sha256:...\n").unwrap();
+        std::fs::write(
+            &ptr,
+            b"version https://git-lfs.github.com/spec/v1\noid sha256:...\n",
+        )
+        .unwrap();
         assert!(looks_like_lfs_pointer(&ptr));
         let tiny = d.join("tiny");
         std::fs::write(&tiny, b"# just a small readme\n").unwrap();
-        assert!(!looks_like_lfs_pointer(&tiny), "a small real file is not a pointer");
+        assert!(
+            !looks_like_lfs_pointer(&tiny),
+            "a small real file is not a pointer"
+        );
         std::fs::remove_dir_all(&d).ok();
     }
 

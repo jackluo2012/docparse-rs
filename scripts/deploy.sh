@@ -3,6 +3,7 @@
 #
 # 用法：
 #   scripts/deploy.sh daemon    # 后台启动（默认）：构建 + 拉模型 + 起服务 + 健康检查
+#   scripts/deploy.sh docker    # Docker 一键：构建镜像（默认烘焙全量模型）→ 起容器
 #   scripts/deploy.sh start     # 前台启动（Ctrl-C 停）
 #   scripts/deploy.sh stop      # 停止后台服务
 #   scripts/deploy.sh status    # 服务状态 + 模型清单
@@ -16,6 +17,7 @@
 #   CACHE_DIR     解析缓存目录 (.cache)；置空禁用
 #   PPV2          1 = 另装 PP-DocLayoutV2 版面后端 (~210MB，替代 YOLO 用) (0)
 #   SKIP_BUILD    1 = 跳过 cargo build --release (0)
+#   DOCKER_BAKE_MODELS  1 = Docker 镜像不烘焙模型，改运行时挂载 ./models (0)
 #   FORCE_MODELS  1 = 模型已存在也重新校验下载 (0)
 #   VLM_URL / VLM_MODEL / VLM_API_KEY
 #                 OpenAI 兼容视觉服务（图说/表重抽）。模型本体不随本项目分发，
@@ -29,7 +31,7 @@
 #   curl -F "file=@doc.pdf"  "http://HOST:PORT/parse?format=chunks&table_model=true&formula_model=true"
 #   curl -F "file=@doc.pdf" "http://HOST:PORT/parse?format=chunks&pages=1-5&envelope=true"
 #   [VLM 配置后] &vlm_describe=true / &vlm_tables=true
-# 说明：`?transcribe_model=true` 属 CLI 专属档（--transcribe-model），REST/MCP 面不含。
+#   curl -F "file=@cjk.pdf" "$base/parse?format=markdown&transcribe_model=true"
 
 set -euo pipefail
 
@@ -51,15 +53,38 @@ fail() { printf '\033[1;31m[deploy]\033[0m %s\n' "$*" >&2; exit 1; }
 
 build() {
     [[ "${SKIP_BUILD:-0}" == "1" ]] && { log "SKIP_BUILD=1，跳过构建"; return; }
+    command -v cargo >/dev/null || fail "未找到 cargo —— 请先安装 Rust（https://rustup.rs）后重试"
     log "cargo build --release（lto=thin；首次约 3-6 分钟）…"
     cargo build --release
     [[ -x "$BIN" ]] || fail "构建后仍无 $BIN"
 }
 
+# 端口占用接管（曾让"新服务起不来、健康检查打到旧进程"——本函数根治）：
+# 占用者若 docparse serve（本工具的进程，常为换了二进制后的残留）→ 自动停掉；
+# 其他进程 → 报错退出，绝不误杀。
+port_listener_pid() {
+    command -v ss >/dev/null 2>&1 || { echo ""; return; }
+    ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | head -1 || true
+}
+
+take_over_port() {
+    local holder
+    holder="$(port_listener_pid)"
+    [[ -z "$holder" ]] && return 0
+    if ps -p "$holder" -o args= 2>/dev/null | grep -q "docparse.*serve"; then
+        log "端口 $PORT 被旧 docparse serve（pid $holder）占用 —— 自动停止它"
+        kill "$holder" 2>/dev/null || true
+        for _ in $(seq 1 10); do kill -0 "$holder" 2>/dev/null || break; sleep 1; done
+        kill -0 "$holder" 2>/dev/null && kill -9 "$holder"
+    else
+        fail "端口 $PORT 被其他进程占用（pid $holder）：$(ps -p "$holder" -o args= 2>/dev/null)。请先释放端口或改 PORT=…"
+    fi
+}
+
 install_models() {
     local tiers=()
-    # OCR：服务默认档是 ppocr-v6（~7MB）。注意不要用 `ocr` 档——那是 v4 回退
-    # 档（models/ppocr），其上游 SWHL/RapidOCR 的 v4 字典文件已挪位、拉取会失败。
+    # OCR：服务默认档是 ppocr-v6（~7MB）。v4 回退档（models/ppocr）现已修复
+    # （其字典在 SWHL/RapidOCR 被删，fetch 直连 PaddlePaddle 官方 GitHub 拉）。
     [[ "${FORCE_MODELS:-0}" == "1" || ! -d "$MODELS_DIR/ppocr-v6" ]] && tiers+=("ppocr-v6")
     [[ "${FORCE_MODELS:-0}" == "1" || ! -f "$MODELS_DIR/layout/doclayout_yolo.onnx" ]] && tiers+=("layout")
     [[ "${FORCE_MODELS:-0}" == "1" || ! -d "$MODELS_DIR/unirec" ]] && tiers+=("unirec")
@@ -97,6 +122,12 @@ wait_healthy() {
     log "等待健康检查（惰性加载：此刻仅占 ~30MB，OCR/UniRec 模型首请求才载入）…"
     for _ in $(seq 1 30); do
         if info="$(healthz)"; then
+            # 防旧进程假就绪：确认监听者就是我们刚 fork 的 pid。
+            local listener
+            listener="$(port_listener_pid)"
+            if [[ -n "$listener" && "$listener" != "$(cat "$PID_FILE")" ]]; then
+                fail "健康检查有响应，但监听 pid($listener) 不是本次启动的($(cat "$PID_FILE")) —— 旧进程仍在？"
+            fi
             log "服务就绪：$info"
             return 0
         fi
@@ -135,6 +166,7 @@ EOF
 do_start_fg() {
     build
     install_models
+    take_over_port
     log "前台启动：$BIN $(server_args | tr '\n' ' ')"
     exec "$BIN" $(server_args)
 }
@@ -147,6 +179,7 @@ do_daemon() {
     fi
     build
     install_models
+    take_over_port
     log "后台启动 → 日志 $LOG_FILE"
     # shellcheck disable=SC2046
     nohup "$BIN" $(server_args) >>"$LOG_FILE" 2>&1 &
@@ -156,6 +189,10 @@ do_daemon() {
 }
 
 do_stop() {
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -q '^docparse$'; then
+        log "停止 Docker 容器 docparse …"
+        docker rm -f docparse >/dev/null 2>&1 || true
+    fi
     if [[ -f "$PID_FILE" ]] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
         local pid; pid="$(cat "$PID_FILE")"
         log "停止 pid $pid …"
@@ -179,6 +216,34 @@ do_status() {
     du -sh "$MODELS_DIR"/* 2>/dev/null || log "  （空）"
 }
 
+# Docker 一键：构建镜像（默认烘焙 ppocr-v6/layout/unirec 三档模型，开箱即用；
+# DOCKER_BAKE_MODELS=1 则不烘焙、运行时挂载 ./models）→ detached 起容器 → 健康检查。
+do_docker() {
+    command -v docker >/dev/null || fail "未找到 docker"
+    local bake="1"; [[ "${DOCKER_BAKE_MODELS:-0}" == "1" ]] && bake="0"
+    log "构建镜像（INSTALL_MODELS=$bake）…"
+    docker build --build-arg INSTALL_MODELS="$bake" -t docparse:latest "$ROOT"
+    docker rm -f docparse >/dev/null 2>&1 || true
+    local -a run_args=(
+        -d --name docparse -p "$PORT:8642"
+        -v docparse-cache:/app/cache
+    )
+    [[ "$bake" == "0" ]] && run_args+=(-v "$MODELS_DIR":/app/models:ro)
+    [[ -n "${VLM_URL:-}" ]]    && run_args+=(-e "VLM_URL=$VLM_URL")
+    [[ -n "${VLM_MODEL:-}" ]]  && run_args+=(-e "VLM_MODEL=$VLM_MODEL")
+    [[ -n "${VLM_API_KEY:-}" ]] && run_args+=(-e "VLM_API_KEY=$VLM_API_KEY")
+    log "启动容器 …"
+    docker run "${run_args[@]}" docparse:latest
+    rm -f "$PID_FILE"
+    for _ in $(seq 1 60); do
+        if info="$(curl -fsS --max-time 3 "http://127.0.0.1:$PORT/healthz" 2>/dev/null)"; then
+            log "容器就绪：$info"; print_usage; return 0
+        fi
+        sleep 2
+    done
+    fail "容器未通过健康检查 —— docker logs docparse"
+}
+
 case "${1:-daemon}" in
     daemon)  do_daemon ;;
     start)   do_start_fg ;;
@@ -186,5 +251,6 @@ case "${1:-daemon}" in
     restart) do_stop; do_daemon ;;
     status)  do_status ;;
     logs)    tail -n 50 -f "$LOG_FILE" ;;
-    *)       fail "用法：deploy.sh [daemon|start|stop|restart|status|logs]" ;;
+    docker)  do_docker ;;
+    *)       fail "用法：deploy.sh [daemon|start|stop|restart|status|logs|docker]" ;;
 esac

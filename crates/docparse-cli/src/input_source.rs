@@ -187,18 +187,41 @@ pub fn from_stdin(explicit: Option<InputFormat>) -> anyhow::Result<TempInput> {
     Ok(TempInput(path))
 }
 
+/// Parse `--header "NAME: VALUE"` repeats into `(name, value)` pairs. A
+/// malformed entry (no colon, empty name) is an error naming the offending
+/// argument — never silently dropped.
+pub fn parse_header_args(args: &[String]) -> anyhow::Result<Vec<(String, String)>> {
+    args.iter()
+        .map(|a| {
+            let (name, value) = a
+                .split_once(':')
+                .ok_or_else(|| anyhow!("--header {a:?}: expected \"NAME: VALUE\""))?;
+            let name = name.trim();
+            if name.is_empty() {
+                anyhow::bail!("--header {a:?}: empty header name");
+            }
+            Ok((name.to_string(), value.trim().to_string()))
+        })
+        .collect()
+}
+
 /// Download a URL into a temp file. Extension: `--input-format` → URL path
 /// suffix → Content-Type → error. 30s timeout, up to 5 redirects (ureq
 /// default) — a local-CLI trust model, deliberately not exposed as a server
-/// feature (SSRF).
-pub fn from_url(url: &str, explicit: Option<InputFormat>) -> anyhow::Result<TempInput> {
+/// feature (SSRF). `headers` ride on the request (--header, e.g. Authorization).
+pub fn from_url(
+    url: &str,
+    explicit: Option<InputFormat>,
+    headers: &[(String, String)],
+) -> anyhow::Result<TempInput> {
     let agent = ureq::AgentBuilder::new()
         .timeout(std::time::Duration::from_secs(30))
         .build();
-    let resp = agent
-        .get(url)
-        .call()
-        .map_err(|e| anyhow!("download {url}: {e}"))?;
+    let mut request = agent.get(url);
+    for (name, value) in headers {
+        request = request.set(name, value);
+    }
+    let resp = request.call().map_err(|e| anyhow!("download {url}: {e}"))?;
     let content_type = resp.header("content-type").map(str::to_string);
     let ext = pick_extension(url::path_of(url), content_type.as_deref(), explicit)?;
     let path = temp_path(&ext);
@@ -270,6 +293,20 @@ mod tests {
         assert!(has_pdf_magic(b"%PDF-1.7\n..."));
         assert!(!has_pdf_magic(b"<html>"));
         assert!(!has_pdf_magic(b"%PD"));
+    }
+
+    #[test]
+    fn header_args_parse_and_reject_junk() {
+        let parsed = parse_header_args(&["Authorization: Bearer tok".into()]).unwrap();
+        assert_eq!(parsed, vec![("Authorization".into(), "Bearer tok".into())]);
+        // Whitespace around name/value is trimmed; value may itself contain a colon.
+        let parsed = parse_header_args(&[" X-Auth : a:b:c ".into()]).unwrap();
+        assert_eq!(parsed, vec![("X-Auth".into(), "a:b:c".into())]);
+        assert!(parse_header_args(&["no-colon-here".into()]).is_err());
+        assert!(
+            parse_header_args(&[": value".into()]).is_err(),
+            "empty name"
+        );
     }
 
     #[test]

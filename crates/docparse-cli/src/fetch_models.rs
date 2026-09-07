@@ -72,7 +72,10 @@ pub fn run(tier: FetchTierArg, root: &Path) -> anyhow::Result<()> {
         }
     }
     if !failures.is_empty() {
-        anyhow::bail!("failed tier(s): {} (others installed fine)", failures.join(", "));
+        anyhow::bail!(
+            "failed tier(s): {} (others installed fine)",
+            failures.join(", ")
+        );
     }
     if tiers.contains(&docparse_ocr::fetch::Tier::Ppv2) {
         eprintln!();

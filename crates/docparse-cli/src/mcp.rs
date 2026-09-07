@@ -136,8 +136,8 @@ fn tool_specs() -> Value {
                     "path": { "type": "string", "description": "Local file path" },
                     "password": { "type": "string",
                                   "description": "PDF decryption password (encrypted PDFs only)" },
-                    "format": { "type": "string", "enum": ["json", "markdown", "text"],
-                                "description": "Output format (default json)" },
+                    "format": { "type": "string", "enum": ["json", "markdown", "text", "meta"],
+                                "description": "Output format (default json). meta = the metadata projection (source/parser/page count/container metadata)." },
                     "ocr": { "type": "boolean",
                              "description": "OCR pages lacking machine-readable text (default false; digital-text pages pass through)" },
                     "layout": { "type": "boolean",
@@ -146,6 +146,8 @@ fn tool_specs() -> Value {
                                      "description": "Re-extract table structure with the embedded UniRec model (PDF only; needs server --unirec-models)" },
                     "formula_model": { "type": "boolean",
                                        "description": "Convert display formulas to LaTeX (PDF only; needs server --unirec-models + layout model)" },
+                    "transcribe_model": { "type": "boolean",
+                                          "description": "Whole-page UniRec re-recognition for hard/CJK layouts (PDF only; needs server --unirec-models + layout model)" },
                     "vlm_describe": { "type": "boolean",
                                       "description": "Caption figures via the configured VLM service (PDF only; needs server --vlm-url/--vlm-model)" },
                     "vlm_tables": { "type": "boolean",
@@ -174,6 +176,7 @@ fn tool_specs() -> Value {
                     "layout": { "type": "boolean", "description": "Layout-model reading order (PDF only)" },
                     "table_model": { "type": "boolean", "description": "UniRec table structure (PDF only)" },
                     "formula_model": { "type": "boolean", "description": "Formulas to LaTeX (PDF only)" },
+                    "transcribe_model": { "type": "boolean", "description": "Whole-page UniRec re-recognition (PDF only)" },
                     "vlm_describe": { "type": "boolean", "description": "VLM figure captions (PDF only)" },
                     "vlm_tables": { "type": "boolean", "description": "VLM table re-extraction (PDF only)" },
                     "pages": pages_arg_schema()
@@ -502,6 +505,7 @@ fn parse_enhanced(
         layout: flag("layout"),
         table_model: flag("table_model"),
         formula_model: flag("formula_model"),
+        transcribe_model: flag("transcribe_model"),
         vlm_describe: flag("vlm_describe"),
         vlm_tables: flag("vlm_tables"),
     };
@@ -523,8 +527,11 @@ fn tool_parse_document(args: &Value, state: &crate::EnhanceState) -> anyhow::Res
         "json" => output::to_json(&doc),
         "markdown" => Ok(output::to_markdown(&doc)),
         "text" => Ok(output::to_text(&doc)),
+        "meta" => Ok(docparse_core::meta::to_json(&docparse_core::meta::report(
+            &doc,
+        ))),
         other => Err(anyhow::anyhow!(
-            "unknown format: {other} (json|markdown|text)"
+            "unknown format: {other} (json|markdown|text|meta)"
         )),
     }
 }
@@ -711,6 +718,29 @@ mod tests {
         // No hit off-page → match is null, but still a valid object.
         assert!(r["structuredContent"].is_object());
         assert!(r["structuredContent"]["match"].is_null());
+    }
+
+    #[test]
+    fn parse_document_supports_meta_and_transcribe() {
+        let path = temp_html("docparse-mcp-meta.html");
+        // format=meta: the metadata projection, not the document body.
+        let r = result_of(&req(
+            "tools/call",
+            json!({ "name": "parse_document",
+                    "arguments": { "path": path, "format": "meta" } }),
+        ));
+        assert_eq!(r["isError"], false);
+        let body: Value = serde_json::from_str(r["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["parser"], "html");
+        assert!(body.get("page_count").is_some(), "{body}");
+        // transcribe_model flag parses and runs the deterministic path on a
+        // non-PDF (a no-op there — the flag is PDF-only upstream).
+        let r = result_of(&req(
+            "tools/call",
+            json!({ "name": "parse_document",
+                    "arguments": { "path": path, "format": "text", "transcribe_model": true } }),
+        ));
+        assert_eq!(r["isError"], false);
     }
 
     #[test]

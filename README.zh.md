@@ -60,7 +60,8 @@ cargo install --git https://github.com/yzlabai/docparse-rs docparse-cli
 
 ```bash
 git clone https://github.com/yzlabai/docparse-rs && cd docparse-rs
-cargo build --release   # → ./target/release/docparse
+scripts/deploy.sh daemon   # 一键：构建 + 装模型（OCR/YOLO/UniRec）+ 起全功能 REST 服务
+scripts/deploy.sh docker   # 或 Docker 一键（默认烘焙全量模型）
 ```
 
 三种方式都得到 `docparse` 二进制。核心不需要任何模型，可选档按需下载（见 [可选模型](#-可选模型)）。

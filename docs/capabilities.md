@@ -56,7 +56,7 @@
 **批量**：`--out-dir`、`-r/--recursive`、`--jobs N`、`--report-json`、`--report-csv`、`--cache-dir <DIR>`（增量缓存：按文件内容 SHA-256 + 输出签名键控，命中直接回放已渲染输出、跳过解析；需 `--out-dir`，不适用 `-f okf`；改内容或换输出参数自然失效重解析）。
 **OKF**：`--okf-resource-base <uri>`、`--okf-tar`、`--force`。
 **OCR**：`--ocr`、`--ocr-models <dir>`（默认 `models/ppocr-v6`，缺则 TTY 确认下载 / `DOCPARSE_OCR_DOWNLOAD=1`）。路由按页进行：有机器可读文本的页面原样通过；缺少可用文本的 PDF 页优先使用已解码的嵌入扫描图像，否则执行该页的完整 PDF 绘制程序、按需渲染为 RGB 后 OCR。这一回退同时覆盖仅有图像位置、没有图像对象，以及用矢量路径绘制文字外观的页面。
-**版面/结构**：`--layout`、`--layout-model <path>`（YOLO 默认 / PPV2 自动识别）、`--table-model <dir>`、`--formula-model <dir>`、`--transcribe-model <dir>`。
+**版面/结构**：`--layout`、`--layout-model <path>`（YOLO 默认 / PPV2 自动识别）、`--table-model <dir>`、`--formula-model <dir>`、`--transcribe-model <dir>`。REST/MCP 面同步暴露 `transcribe_model`（?transcribe_model=true / MCP 工具参数；PDF 专属）。
 **输出阅读顺序**：markdown / text / chunks 三种格式共享同一几何阅读顺序——表格与图片按页内位置 splice 回正文（`layout::page_items`），不再沉到页尾；`follows` 要求水平重叠 + 顶边在浮动之下，双栏/多栏页面不会串列。RAG chunk 使用 `page_items_chunk`（绑定的图注并入图片 chunk，不重复输出）。
 **续表/无表头表**：markdown/text 渲染时，无表头的数据行（空 cell 或全数值）不再被当成表头画出 `---` 分隔线——列数与上一表相同则继承上一表表头（跨页有效），否则以注释标注后输出数据行（`table::looks_like_header_row` 判定）。
 **稀疏 ruled 表**：ruled 检测的"band 即行"路径（≥3 条宽横线）逐列填充率门槛为 40%（原文 60%），booktabs 式多空 cell 表（如 Attention 论文 Table 3 的 13 列变体对比表）可被检出；弱证据的 gap 推断路径仍保持 60% 严格门槛，正文/图形框不会因放宽而误检。
@@ -65,6 +65,7 @@
 **图片**：`--image-dir <dir>`、`--image-embed`。
 **质量/可观测**：`--quality`、`--profile`、`--route-plan`（均出 JSON 到 stderr）、`--quality-threshold <float>`（复核闸门：无文本层页恒列出，乱码率超阈值页列出，JSON 清单到 stderr，入库前人工复核）、`--progress auto\|always\|never\|json`、`-q/--quiet`、`--stats`。
 **输入物化（单输入专用）**：stdin `-`（`%PDF-` magic 嗅探免参数；否则必须 `--input-format`）、URL `http(s)://` 直接下载解析（扩展名 → Content-Type → `--input-format` 依次推断；30s 超时；仅限本地 CLI，REST/MCP 不做 URL 拉取——SSRF 边界）、`--input-format <FMT>`（pdf|docx|html|xlsx|pptx|md|csv|srt|tex|eml|img|adoc 显式格式）。两者物化为临时文件后走常规管线（含 `--pages`/增强/全部输出格式），临时文件跑完即删。
+**URL 认证**：`--header <NAME: VALUE>`（可重复，如 Authorization bearer），仅作用 URL 输入；MCP `parse_document` 支持 `format=meta` 投影。
 **子命令**：`locate <file> --page N --x X --y Y [--top-left] [-f json|text]`（坐标反查：命中输出该 chunk（与 `-f chunks` 元素同构），未命中 `null`/空行退出码 0——与 MCP `locate` 语义一致；默认 PDF 用户空间，`--top-left` 从左上原点换算 `y=页高-y`；确定性路径无模型 flag）、`mcp`、`serve --port`（均支持 `--cache-dir <DIR>`：服务端文档缓存，同内容+同增强参数命中直接回放增强后 Document、跳过解析；REST 加 `x-docparse-cache: hit|miss` 响应头，MCP 纯加速、输出逐字节一致）、`schema [--name N] [--write]`、`fetch-models <tier> [--dir DIR]`（纯 Rust 模型下载：ocr / ppocr-v6 / layout / unirec / ppv2 / all，HF tree API，无需 hf CLI / Python / shell）。
 
 ---

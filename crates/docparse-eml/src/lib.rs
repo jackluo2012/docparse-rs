@@ -82,10 +82,20 @@ pub fn parse_bytes(bytes: &[u8]) -> anyhow::Result<Document> {
         );
     }
 
+    // Header metadata (devlog 2026-09-06 follow-up): Subject → title,
+    // From → author, Date → created (mail-parser's to_rfc3339 is ISO 8601).
+    // Always `Some` — the format has a metadata source even when a message
+    // carries none of the three headers (same convention as the HTML backend).
+    let metadata = docparse_core::ir::Metadata {
+        title: msg.subject().map(|s| s.to_string()),
+        author: address_line(msg.from()),
+        created: msg.date().map(|d| d.to_rfc3339()),
+        ..Default::default()
+    };
     Ok(Document {
         source: "<eml>".to_string(),
         provenance: Some(Provenance::new("eml", env!("CARGO_PKG_VERSION"))),
-        metadata: None,
+        metadata: Some(metadata),
         pages: b.finish(),
     })
 }
@@ -192,5 +202,54 @@ just a body line\r\n";
         // No subject heading is emitted; the body is still mapped.
         assert!(t.iter().any(|s| s == "just a body line"));
         assert!(t.iter().all(|s| s != "Hi"));
+    }
+}
+
+#[cfg(test)]
+mod metadata_tests {
+    use super::*;
+
+    /// devlog 2026-09-06 follow-up: header metadata lands in
+    /// `Document.metadata` (Subject→title, From→author, Date→created).
+    #[test]
+    fn headers_project_into_metadata() {
+        let raw = b"From: Ada Lovelace <ada@example.org>\r\n\
+                    To: Grace Hopper <grace@example.org>\r\n\
+                    Subject: Quarterly numbers\r\n\
+                    Date: Sun, 6 Sep 2026 09:30:00 +0000\r\n\
+                    Content-Type: text/plain; charset=utf-8\r\n\
+                    \r\n\
+                    Body line one.\r\n";
+        let doc = parse_bytes(raw).expect("parses");
+        let meta = doc.metadata.expect("eml always carries a metadata source");
+        assert_eq!(meta.title.as_deref(), Some("Quarterly numbers"));
+        assert_eq!(
+            meta.author.as_deref(),
+            Some("Ada Lovelace <ada@example.org>")
+        );
+        let created = meta.created.expect("date header");
+        assert!(created.starts_with("2026-09-06T"), "{created}");
+        // Body still parses alongside.
+        let texts: Vec<&str> = doc.pages[0]
+            .text_chunks()
+            .iter()
+            .map(|t| t.text.as_str())
+            .collect();
+        assert!(
+            texts.iter().any(|t| t.contains("Body line one.")),
+            "{texts:?}"
+        );
+    }
+
+    #[test]
+    fn headerless_message_still_yields_some_metadata() {
+        // A message with none of the three headers: the format has a metadata
+        // source, so `Some` (empty) — same convention as the HTML backend.
+        let raw = b"Content-Type: text/plain\r\n\r\njust text\r\n";
+        let doc = parse_bytes(raw).expect("parses");
+        let meta = doc.metadata.expect("Some even when headers absent");
+        assert_eq!(meta.title, None);
+        assert_eq!(meta.author, None);
+        assert_eq!(meta.created, None);
     }
 }

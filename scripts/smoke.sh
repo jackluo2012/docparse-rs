@@ -95,9 +95,11 @@ echo "== 版面（DocLayout-YOLO 真实推理，数字页按页路由）=="
 lay_json="$(curl -fsS -F file=@"$TMP/digital.pdf" "$BASE/parse?format=json&layout=true")"
 check "layout 解析成功且页数不变" "$(echo "$lay_json" | j "['pages'].__len__()" 2>/dev/null)" "2"
 
-echo "== UniRec 表/公式（首请求载 ~700MB，稍慢属预期）=="
+echo "== UniRec 表/公式/整页转写（首请求载 ~700MB，稍慢属预期）=="
 u_json="$(curl -fsS --max-time 300 -F file=@"$TMP/digital.pdf" "$BASE/parse?format=json&table_model=true&formula_model=true")"
 check "UniRec 路径解析成功" "$(echo "$u_json" | j "['pages'].__len__()" 2>/dev/null)" "2"
+t_json="$(curl -fsS --max-time 300 -F file=@"$TMP/digital.pdf" "$BASE/parse?format=json&transcribe_model=true")"
+check "transcribe_model 路径解析成功" "$(echo "$t_json" | j "['pages'].__len__()" 2>/dev/null)" "2"
 
 if [[ -n "${VLM_URL:-}" && -n "${VLM_MODEL:-}" ]]; then
     echo "== VLM（$VLM_MODEL）=="
