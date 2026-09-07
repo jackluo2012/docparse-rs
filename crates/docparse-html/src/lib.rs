@@ -11,6 +11,8 @@
 //! (decoded) or from a relative path resolved against the HTML file's directory;
 //! remote `http(s)://` images are not fetched (skipped).
 
+mod main_content;
+
 use base64::Engine;
 use docparse_core::ir::Document;
 use docparse_core::parser::DocumentParser;
@@ -61,7 +63,14 @@ pub fn parse_str(html: &str) -> Document {
 fn parse_html(html: &str, base: Option<&Path>) -> Document {
     let dom = Html::parse_document(html);
     let mut b = PageBuilder::letter();
-    walk(dom.tree.root(), &mut b, base);
+    // Main-content extraction (site rules + Readability-style scoring):
+    // template chrome (follow banners, comment sections, rails) is excluded
+    // at the root. `None` = no confident candidate → walk the whole document,
+    // exactly the pre-extraction behavior (never drop a short article).
+    let root = main_content::main_root(&dom)
+        .and_then(|id| dom.tree.get(id))
+        .unwrap_or_else(|| dom.tree.root());
+    walk(root, &mut b, base);
     Document {
         source: "<html>".to_string(),
         provenance: Some(docparse_core::ir::Provenance::new(
@@ -126,6 +135,32 @@ fn html_metadata(dom: &Html) -> docparse_core::ir::Metadata {
     meta
 }
 
+/// Platform boilerplate that authors' templates inject *inside* the content
+/// container (follow-me banners, QR prompts). Matched against the whole
+/// paragraph only when it is short — a long paragraph that merely mentions
+/// "点击上方" is real prose and must survive. These are fixed platform
+/// phrasings, not author content, so whole-line dropping is high-confidence.
+const NOISE_LINE_PATTERNS: &[&str] = &[
+    r"^▲?\s*点击上方[^。]{0,12}(蓝色)?(文字|字体|蓝字).{0,8}(关注|免费)",
+    r"^(点击|长按|扫描).{0,10}(上方|二维码|识别).{0,12}(关注|订阅|咨询)",
+    r"^(微信扫一扫|扫码|扫一扫).{0,10}(关注|咨询)",
+    r"^本(文|篇)由(平台|微信)?(自动|模板)?(生成|发布)",
+];
+
+fn is_template_noise(text: &str) -> bool {
+    use std::sync::OnceLock;
+    static PATTERNS: OnceLock<Vec<regex::Regex>> = OnceLock::new();
+    let patterns = PATTERNS.get_or_init(|| {
+        NOISE_LINE_PATTERNS
+            .iter()
+            .map(|p| regex::Regex::new(p).expect("static noise pattern"))
+            .collect()
+    });
+    let t = text.trim();
+    // Long prose that merely mentions the phrasing must survive.
+    t.chars().count() <= 60 && patterns.iter().any(|re| re.is_match(t))
+}
+
 /// Heading font size by tag (body text is 12; larger ⇒ heading downstream).
 fn heading_size(tag: &str) -> Option<f32> {
     Some(match tag {
@@ -146,13 +181,21 @@ fn walk(node: NodeRef<Node>, b: &mut PageBuilder, base: Option<&Path>) {
         };
         let tag = el.name();
         if let Some(size) = heading_size(tag) {
-            b.paragraph(collect_text(child), size);
+            let text = collect_text(child);
+            if is_template_noise(&text) {
+                continue;
+            }
+            b.paragraph(text, size);
             continue;
         }
         match tag {
             "script" | "style" | "head" | "noscript" | "title" | "svg" => {}
             "p" | "blockquote" | "figcaption" | "pre" | "dd" | "dt" | "caption" => {
-                b.paragraph(collect_text(child), 12.0);
+                let text = collect_text(child);
+                if is_template_noise(&text) {
+                    continue;
+                }
+                b.paragraph(text, 12.0);
             }
             "ul" => walk_list(child, b, None),
             "ol" => {
@@ -263,8 +306,13 @@ fn walk_list(list: NodeRef<Node>, b: &mut PageBuilder, ordered_start: Option<u64
 fn collect_text(node: NodeRef<Node>) -> String {
     let mut s = String::new();
     for d in node.descendants() {
-        if let Node::Text(t) = d.value() {
-            s.push_str(&t.text);
+        match d.value() {
+            Node::Text(t) => s.push_str(&t.text),
+            // WeChat-style authors break lines with <br> inside a paragraph:
+            // it is a deliberate segment boundary, so keep it as a newline
+            // (collapse_ws would otherwise glue the halves mid-sentence).
+            Node::Element(e) if e.name() == "br" => s.push('\n'),
+            _ => {}
         }
     }
     collapse_ws(&s)

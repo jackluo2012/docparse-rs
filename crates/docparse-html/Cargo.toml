@@ -6,6 +6,7 @@ license.workspace = true
 authors.workspace = true
 
 [dependencies]
+regex.workspace = true
 docparse-core = { path = "../docparse-core" }
 anyhow.workspace = true
 scraper.workspace = true

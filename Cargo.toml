@@ -86,6 +86,8 @@ libc = "0.2"
 # Incremental batch cache (--cache-dir): content SHA-256 keying. Already in the
 # tree transitively (lopdf), so a direct dep adds zero new supply-chain surface.
 sha2 = "0.10"
+# Template-line noise filter (docparse-html): already a transitive dep.
+regex = "1"
 
 [profile.release]
 lto = "thin"

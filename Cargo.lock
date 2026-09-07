@@ -747,6 +747,7 @@ dependencies = [
  "base64",
  "docparse-core",
  "ego-tree",
+ "regex",
  "scraper",
 ]
 
