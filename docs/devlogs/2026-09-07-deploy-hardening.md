@@ -32,7 +32,8 @@
 - workspace 测试全绿（EML +2、MCP +1、input_source +1）。
 - v4 档：4 文件下载 ✓、字典 6623 行 ✓、`--ocr-models models/ppocr` 真实推理 ✓。
 - `--header`：401/200 双态端到端 ✓。
-- Docker 镜像构建 + 容器冒烟：见下方实施记录（构建含 780MB 模型烘焙，耗时较长，后台完成后补记）。
+- **Docker（已验证）**：镜像 `docparse:latest` **1.74GB**（烘焙 ppocr-v6+layout+unirec）；`deploy.sh docker` 一键起容器 → healthz 0.9.0 ✓；容器内三路**真实推理**全过——OCR（PP-OCRv6 读出手绘位图文字）、`?transcribe_model=true`（UniRec 3 页）、`?layout=true`（YOLO 3 页）。
+- **第三坑（Docker 构建本身）**：`.dockerignore` 整目录排除 `docs/`，而 `mcp.rs` 的 `include_str!` 嵌入 `docs/agent-*.md` 两个指南（MCP resources）→ 容器内编译 exit 101。修复：排除改为 `docs/*` 子项 + `!` 反选两个嵌入文件（dockerignore 的父目录剪枝语义下，整目录排除后 `!` 反选无效）。教训：**嵌入资源是构建契约的一部分**，`.dockerignore`/`.gitignore` 改动要对照 `include_str!`/`include_bytes!` 清单（`grep -rn "include_" crates/*/src/`）。
 
 ## 实耗时
 

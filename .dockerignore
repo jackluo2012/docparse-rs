@@ -3,7 +3,12 @@ models/
 .git/
 tmp/
 fuzz/
-docs/
+# docs/ is bulk-excluded EXCEPT the two guides embedded into the binary via
+# include_str! (mcp.rs MCP resources) — pruning the parent dir would break
+# `docker build`, so exclude its children and re-include these two.
+docs/*
+!docs/agent-enhancement-decisions.md
+!docs/agent-integration.md
 clients/
 scripts/
 **/*.pdf
